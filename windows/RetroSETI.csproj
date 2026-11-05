@@ -17,11 +17,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- optional custom title logo: shown as "S.E.T.I. @ {logo}" -->
-    <EmbeddedResource Include="../web/logo.png" Condition="Exists('../web/logo.png')" LogicalName="logo.png" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 

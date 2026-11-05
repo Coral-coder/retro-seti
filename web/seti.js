@@ -285,11 +285,17 @@
     text(location.host ? (location.host + location.pathname).replace(/\/(index\.html)?$/, '') : 'retro-seti', 1210, 58, 17, WHITE, 'center');
   }
 
-  // Custom title: "S.E.T.I. @ {logo}" once web/logo.png (or ?logo=URL) is present.
+  // Custom title: "S.E.T.I. @ {logo}" once the viewer uploads a logo (kept in this browser
+  // only, via localStorage) or passes ?logo=URL. Without one, the classic title is shown.
   const logoImg = new Image();
   let logoReady = false;
-  logoImg.onload = () => { logoReady = logoImg.naturalWidth > 0; };
-  logoImg.src = params.get('logo') || 'logo.png';
+  logoImg.onload = () => { logoReady = logoImg.naturalWidth > 0; updateLogoButtons(); };
+  logoImg.onerror = () => { logoReady = false; updateLogoButtons(); };
+  function setLogoSrc(src) { logoReady = false; if (src) logoImg.src = src; else { logoImg.removeAttribute('src'); updateLogoButtons(); } }
+  function updateLogoButtons() {
+    const clear = document.getElementById('logoClear');
+    if (clear) clear.hidden = !logoReady;
+  }
 
   function drawLogoTitle() {
     ctx.letterSpacing = '6px';
@@ -506,7 +512,7 @@
       ['The data shown is simulated — nothing is downloaded or analysed.', 19],
       ['Not affiliated with UC Berkeley or the SETI@home project.', 19],
       ['', 10],
-      ['F1  this box          F  fullscreen          N  set your name', 19],
+      ['F1  this box      F  fullscreen      N  your name      L  your logo', 19],
       ['Your display is kept awake while this page is visible.', 19],
       ['', 10],
       ['The real SETI@home ran from May 1999; the classic client', 19],
@@ -613,6 +619,33 @@
   }
   document.getElementById('fsBtn').addEventListener('click', toggleFullscreen);
   document.getElementById('nameBtn').addEventListener('click', askName);
+
+  // ---- user logo upload (stays in this browser) ----
+  const logoFile = document.getElementById('logoFile');
+  function pickLogo() { logoFile.value = ''; logoFile.click(); }
+  logoFile.addEventListener('change', () => {
+    const f = logoFile.files && logoFile.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => {
+      // shrink to title size so it fits comfortably in localStorage
+      const k = Math.min(1, 1120 / img.naturalWidth, 140 / img.naturalHeight);
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * k));
+      c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      const data = c.toDataURL('image/png');
+      store.set('logo', data);
+      setLogoSrc(data);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); alert('That file could not be read as an image.'); };
+    img.src = url;
+  });
+  document.getElementById('logoBtn').addEventListener('click', pickLogo);
+  document.getElementById('logoClear').addEventListener('click', () => { store.set('logo', null); setLogoSrc(null); });
+  setLogoSrc(params.get('logo') || store.get('logo', null));
   canvas.addEventListener('dblclick', toggleFullscreen);
   canvas.addEventListener('click', () => { showInfo = false; });
   document.addEventListener('keydown', (e) => {
@@ -622,6 +655,7 @@
     const k = e.key.toLowerCase();
     if (k === 'f') toggleFullscreen();
     else if (k === 'n') askName();
+    else if (k === 'l') pickLogo();
   });
 
   // hide cursor and buttons when idle

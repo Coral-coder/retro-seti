@@ -27,11 +27,16 @@ globe/wave logo and dish are redrawn, not copied from the original.
 
 ### Custom title logo
 
-Put a `logo.png` in `web/`. A transparent or black background works best, wide (about 7:1)
-is ideal, and the logo is scaled to 70 px high. The title then becomes **"S.E.T.I. @ {logo}"**
-instead of the classic "The Search for Extraterrestrial Intelligence at HOME". The Windows
-build embeds the same file (or reads a `logo.png` placed next to the `.scr`). You can also
-try a logo without committing it: `?logo=https://…/image.png`.
+Each viewer can use their own logo. The title then becomes **[globe] S.E.T.I. @ {logo}**
+instead of the classic "The Search for Extraterrestrial Intelligence at HOME".
+
+- **Web:** click **Upload logo** (or press **L**) and pick an image. It's scaled down and kept
+  in that browser's `localStorage`; nothing is uploaded to a server. **Remove logo** restores
+  the classic title. `?logo=https://…/image.png` also works for a one-off.
+- **Windows:** open the screensaver's settings (`/c`, or *Settings* in Screen Saver Settings)
+  and click **Choose logo…**. The image is copied to `%LOCALAPPDATA%\RetroSETI\logo.png`.
+
+A wide PNG with a transparent or black background looks best.
 
 ## Web version (GitHub Pages)
 
@@ -40,7 +45,7 @@ try a logo without committing it: `?logo=https://…/image.png`.
 - **Keeps the display awake** using the Screen Wake Lock API (with a muted-video fallback for
   browsers without it). The *Display awake* button toggles it; the browser releases the lock
   when the tab is hidden and the page re-takes it when you come back.
-- **F1**: info box · **F** or double-click: fullscreen · **N**: set your name
+- **F1**: info box · **F** or double-click: fullscreen · **N**: set your name · **L**: upload a logo
 - URL options: `?name=Your+Name`, `?wu=15` (minutes per data unit)
 - Work units completed and total CPU time are remembered in `localStorage`.
 
@@ -61,7 +66,7 @@ Screen Saver Settings.
 | --- | --- |
 | `RetroSETI.scr /s` | Fullscreen on every monitor; mouse/keyboard exits |
 | `RetroSETI.scr /w` | Normal window (F11 / double-click = fullscreen, F1 = info) |
-| `RetroSETI.scr /c` | Settings: name, minutes per data unit, reset stats |
+| `RetroSETI.scr /c` | Settings: name, minutes per data unit, title logo, reset stats |
 | `RetroSETI.scr /p <hwnd>` | Little preview in Screen Saver Settings |
 
 While running (`/s` or `/w`) it calls `SetThreadExecutionState(ES_DISPLAY_REQUIRED |

@@ -212,16 +212,17 @@ namespace RetroSeti
         static Image customLogo;
         static bool logoChecked;
 
+        // The user's own logo, chosen in the settings dialog (see Settings.LogoPath).
         static Image CustomLogo()
         {
             if (logoChecked) return customLogo;
             logoChecked = true;
             try
             {
-                string beside = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logo.png");
-                if (System.IO.File.Exists(beside)) return customLogo = Image.FromFile(beside);
-                var st = typeof(Renderer).Assembly.GetManifestResourceStream("logo.png");
-                if (st != null) customLogo = Image.FromStream(st);
+                if (System.IO.File.Exists(Settings.LogoPath))
+                    using (var fs = System.IO.File.OpenRead(Settings.LogoPath))
+                    using (var img = Image.FromStream(fs))
+                        customLogo = new Bitmap(img);   // copy so the file isn't kept locked
             }
             catch { customLogo = null; }
             return customLogo;

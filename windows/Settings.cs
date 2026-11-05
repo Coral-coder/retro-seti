@@ -16,6 +16,10 @@ namespace RetroSeti
         public static double Cpu;
         public static DateTime Since = DateTime.Now;
 
+        /// <summary>User-chosen title logo; the title becomes "S.E.T.I. @ {logo}" when it exists.</summary>
+        public static string LogoPath => System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RetroSETI", "logo.png");
+
         public static void Load()
         {
             try
@@ -74,7 +78,7 @@ namespace RetroSeti
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.Font;
             Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(380, 230);
+            ClientSize = new Size(380, 268);
 
             var lblName = new Label { Text = "User name:", Location = new Point(16, 20), AutoSize = true };
             var txtName = new TextBox { Text = Settings.Name, Location = new Point(150, 16), Width = 210, MaxLength = 40 };
@@ -86,16 +90,45 @@ namespace RetroSeti
                        "Run \"RetroSETI.scr /w\" for a normal window (F11 = fullscreen).",
                 Location = new Point(16, 96), Size = new Size(350, 70), ForeColor = SystemColors.GrayText,
             };
-            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(196, 186), Width = 80 };
-            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(284, 186), Width = 80 };
-            var reset = new Button { Text = "Reset stats", Location = new Point(16, 186), Width = 100 };
+            var lblLogo = new Label { Location = new Point(16, 184), AutoSize = true };
+            var chooseLogo = new Button { Text = "Choose logo\u2026", Location = new Point(150, 179), Width = 105 };
+            var removeLogo = new Button { Text = "Remove logo", Location = new Point(261, 179), Width = 100 };
+            void RefreshLogo()
+            {
+                bool has = System.IO.File.Exists(Settings.LogoPath);
+                lblLogo.Text = has ? "Title logo: custom" : "Title logo: classic";
+                removeLogo.Enabled = has;
+            }
+            RefreshLogo();
+            chooseLogo.Click += (s, e) =>
+            {
+                using (var dlg = new OpenFileDialog { Title = "Choose a logo for the title", Filter = "Images|*.png;*.jpg;*.jpeg;*.gif;*.bmp|All files|*.*" })
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    try
+                    {
+                        using (var img = Image.FromFile(dlg.FileName))
+                        {
+                            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Settings.LogoPath));
+                            using (var copy = new Bitmap(img)) copy.Save(Settings.LogoPath, System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                    }
+                    catch (Exception ex) { MessageBox.Show(this, "Couldn't use that image:\n" + ex.Message, Text); }
+                    RefreshLogo();
+                }
+            };
+            removeLogo.Click += (s, e) => { try { System.IO.File.Delete(Settings.LogoPath); } catch { } RefreshLogo(); };
+
+            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(196, 226), Width = 80 };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(284, 226), Width = 80 };
+            var reset = new Button { Text = "Reset stats", Location = new Point(16, 226), Width = 100 };
             reset.Click += (s, e) =>
             {
                 if (MessageBox.Show(this, "Reset work unit count and CPU time?", Text, MessageBoxButtons.YesNo) == DialogResult.Yes)
                 { Settings.Wus = 0; Settings.Cpu = 0; Settings.SaveStats(); }
             };
             AcceptButton = ok; CancelButton = cancel;
-            Controls.AddRange(new Control[] { lblName, txtName, lblWu, numWu, info, ok, cancel, reset });
+            Controls.AddRange(new Control[] { lblName, txtName, lblWu, numWu, info, lblLogo, chooseLogo, removeLogo, ok, cancel, reset });
 
             FormClosing += (s, e) =>
             {
