@@ -63,12 +63,14 @@
         <option value="600">10 minutes per second</option>
         <option value="3600" selected>1 hour per second</option>
         <option value="14400">4 hours per second</option>
+        <option value="86400">1 day per second</option>
       </select>
     </label>
     <label class="demo-only" title="Tilt the dish to a new declination each simulated day, as a mapping survey would">Survey
       <select id="survey">
         <option value="on" selected>Re-point every day</option>
-        <option value="off">Stay at the current pointing</option>
+        <option value="month">Re-point once a month</option>
+        <option value="off">Never move it (unattended Pi)</option>
       </select>
     </label>
     <button id="run" class="primary demo-only" type="button">Start</button>

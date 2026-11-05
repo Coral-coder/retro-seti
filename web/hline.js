@@ -312,8 +312,9 @@
       const next = Math.max(simT, lastRec + recEvery * 1000);
       if (next > end) { simT = end; break; }
       simT = next; lastRec = simT;
-      if (ui.survey.value === 'on') {
-        const decs = surveyDecs(), day = Math.floor((simT - surveyStart) / 86164091);
+      if (ui.survey.value === 'on' || ui.survey.value === 'month') {
+        const per = ui.survey.value === 'on' ? 86164091 : 30.44 * 86400000;
+        const decs = surveyDecs(), day = Math.floor((simT - surveyStart) / per);
         const m = meridianFor(decs[day % decs.length]);
         curAz = m.az; curEl = m.el;
       } else { curAz = num(ui.az, 180); curEl = num(ui.el, 90); }
