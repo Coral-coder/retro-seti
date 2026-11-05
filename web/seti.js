@@ -1,22 +1,28 @@
 /*
- * Retro SETI — a tribute to the classic (1999–2005) SETI@home screensaver.
- * All data is simulated. Nothing is downloaded or uploaded.
+ * Retro SETI — a tribute to the classic (v3.x, 1999–2005) SETI@home screensaver.
+ * Layout and palette are matched to screenshots of the original v3.07 client.
+ * All data is simulated; nothing is downloaded or uploaded.
  *
  * URL parameters:
- *   ?name=Your+Name   user name shown in the User Info panel (remembered)
- *   ?wu=15            minutes per simulated work unit (0.5 – 600)
- *   ?panels=0         start with the text panels hidden (H toggles)
+ *   ?name=Your+Name   user name shown in User Info (remembered)
+ *   ?wu=15            minutes per simulated data unit (0.5 – 600)
  */
 (() => {
   'use strict';
 
   // ---------- config ----------
-  const VW = 1600, VH = 1000;          // virtual canvas, letterboxed to the window
-  const NF = 48, NT = 40;              // frequency bins x time rows in the 3D graph
-  const ROWS_PER_SEC = 9;
+  const VW = 1500, VH = 885;            // virtual canvas (same aspect as the original 753x444)
+  const NF = 128, NT = 48;              // frequency columns x time rows in the 3D graph
   const params = new URLSearchParams(location.search);
   const WU_SECONDS = clamp(parseFloat(params.get('wu')) || 15, 0.5, 600) * 60;
+  const SLOT_SECONDS = 12;              // one (drift rate, FFT length) pass
   const FFTS = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
+  const BANDWIDTH = 9765.625;           // Hz per data unit
+  const WU_TIME = 107.374;              // seconds of telescope data per data unit
+
+  const PURPLE = '#9a66f6', GREEN = '#35dea7', WHITE = '#ffffff', LINE_RED = '#c83232', GREY = '#a0a0a0';
+  const FONT = 'Arial, "Liberation Sans", Helvetica, sans-serif';
+  const TITLE_FONT = '"Arial Black", "Arial", "Liberation Sans", Helvetica, sans-serif';
 
   const canvas = document.getElementById('c');
   const ctx = canvas.getContext('2d');
@@ -24,6 +30,7 @@
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function rand(a, b) { return a + Math.random() * (b - a); }
   function pad(n, w = 2) { return String(Math.floor(n)).padStart(w, '0'); }
+  function expo() { return -Math.log(1 - Math.random()); }
 
   // ---------- persistence ----------
   const store = {
@@ -31,122 +38,121 @@
     set(k, v) { try { localStorage.setItem('retroseti.' + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
   };
   const user = {
-    name: params.get('name') || store.get('name', 'Anonymous Listener'),
+    name: params.get('name') || store.get('name', 'anonymous'),
     wus: store.get('wus', 0),
-    cpu: store.get('cpu', 0),            // seconds
-    since: store.get('since', Date.now()),
+    cpu: store.get('cpu', 0),
   };
   if (params.get('name')) store.set('name', user.name);
-  store.set('since', user.since);
 
-  // ---------- colour palette (height -> colour) ----------
-  const STOPS = [[0, [20, 40, 200]], [0.22, [0, 150, 255]], [0.42, [0, 215, 90]],
-                 [0.62, [240, 235, 0]], [0.8, [255, 130, 0]], [1, [255, 25, 25]]];
-  function heat(t) {
-    t = clamp(t, 0, 1);
-    for (let i = 1; i < STOPS.length; i++) {
-      if (t <= STOPS[i][0]) {
-        const [t0, c0] = STOPS[i - 1], [t1, c1] = STOPS[i];
+  // ---------- graph palette: hue by frequency, paler with power ----------
+  const HUES = [[0, [255, 30, 40]], [0.2, [245, 40, 170]], [0.33, [210, 40, 250]], [0.52, [130, 60, 250]],
+                [0.65, [40, 60, 245]], [0.83, [60, 160, 245]], [1, [70, 235, 240]]];
+  function hue(t) {
+    for (let i = 1; i < HUES.length; i++) {
+      if (t <= HUES[i][0]) {
+        const [t0, c0] = HUES[i - 1], [t1, c1] = HUES[i];
         const f = (t - t0) / (t1 - t0);
-        return c0.map((v, j) => Math.round(v + (c1[j] - v) * f));
+        return c0.map((v, j) => v + (c1[j] - v) * f);
       }
     }
-    return STOPS[STOPS.length - 1][1];
+    return HUES[HUES.length - 1][1];
   }
-  const LEVELS = 64;
-  const SHADES = [];
-  for (let i = 0; i < LEVELS; i++) {
-    const [r, g, b] = heat(i / (LEVELS - 1));
-    const s = (k) => `rgb(${Math.min(255, Math.round(r * k))},${Math.min(255, Math.round(g * k))},${Math.min(255, Math.round(b * k))})`;
-    SHADES.push({ front: s(0.85), top: s(1.25), side: s(0.55) });
+  const LEVELS = 12;
+  // COLS[i][level] = {front, top, side}
+  const COLS = [];
+  for (let i = 0; i < NF; i++) {
+    const base = hue(i / (NF - 1));
+    const lv = [];
+    for (let l = 0; l < LEVELS; l++) {
+      const w = (l / (LEVELS - 1)) ** 3 * 0.75;           // whiten tall bars
+      const c = base.map((v) => v + (255 - v) * w);
+      const s = (k) => `rgb(${c.map((v) => Math.round(clamp(v * k, 0, 255))).join(',')})`;
+      lv.push({ front: s(0.8), top: s(1.2), side: s(0.38) });
+    }
+    COLS.push(lv);
   }
 
-  // ---------- work unit simulation ----------
-  const MONTHS = ['ja', 'fe', 'mr', 'ap', 'my', 'jn', 'jl', 'au', 'se', 'oc', 'no', 'de'];
-  function jdToDate(jd) { return new Date((jd - 2440587.5) * 86400000); }
+  // ---------- data unit simulation ----------
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
   function newWorkUnit() {
-    const jd = rand(2451179.5, 2453550);
-    const d = jdToDate(jd);
-    const name = `${pad(d.getUTCDate())}${MONTHS[d.getUTCMonth()]}${pad(d.getUTCFullYear() % 100)}a${'abcdefgh'[Math.floor(rand(0, 8))]}` +
-      `.${Math.floor(rand(10000, 32000))}.${Math.floor(rand(1000, 9999))}.${Math.floor(rand(100000, 999999))}.${Math.floor(rand(1, 250))}`;
     return {
-      name, jd,
       ra: rand(0, 24), dec: rand(-1.5, 38),
-      base: 1418750000 + Math.floor(rand(0, 256)) * 9765.625,
-      angle: rand(0.003, 3.2),
+      recorded: new Date(Date.UTC(1999, 0, 1) + rand(0, 7 * 365.25 * 86400000)),
+      base: 1418750000 + Math.floor(rand(0, 256)) * BANDWIDTH,
       p: 0, cpu: 0,
-      chirpSteps: Math.max(8, Math.round(WU_SECONDS / 20)),
-      bestGauss: null, bestSpike: null,
-      gauss: null,
+      slots: Math.max(6, Math.round(WU_SECONDS / SLOT_SECONDS)),
+      bestPeak: 0,
     };
   }
 
   let wu = newWorkUnit();
-  let phase = 'analyze';     // 'analyze' | 'sending' | 'receiving'
+  let phase = 'analyze';    // 'analyze' | 'sending' | 'receiving'
   let phaseT = 0;
-  const rows = [];           // rows[0] = newest spectrum (Float32Array of powers)
-  let rowAcc = 0;
 
-  function analysisState(p) {
-    if (p < 0.012) return { act: 'Doing baseline smoothing', chirp: 0, fft: 0 };
-    const q = (p - 0.012) / 0.988 * wu.chirpSteps;
-    const ci = Math.floor(q), fr = q - ci;
-    const k = Math.ceil(ci / 2), sign = ci % 2 ? 1 : -1;
-    const chirp = sign * k * (50 / (wu.chirpSteps / 2));
-    const fx = fr * FFTS.length, fi = Math.min(FFTS.length - 1, Math.floor(fx)), ff = fx - fi;
-    const act = ff < 0.5 ? 'Computing Fourier transforms'
-      : ff < 0.68 ? 'Searching for spikes'
-      : ff < 0.86 ? 'Searching for gaussians'
-      : 'Searching for pulses and triplets';
-    return { act, chirp, fft: FFTS[fi] };
+  // 3D graph data, rows[0] = time 0 (front)
+  const rows = [];
+  for (let t = 0; t < NT; t++) rows.push(new Float32Array(NF));
+  let sweepRow = 0, sweepAcc = 0, graphDirty = true, lastSlot = -1;
+
+  function slotState(p) {
+    const q = p * wu.slots, k = Math.min(wu.slots - 1, Math.floor(q)), f = q - k;
+    const fft = FFTS[k % FFTS.length];
+    const ci = Math.floor(k / FFTS.length);
+    const n = Math.ceil(ci / 2), sign = ci % 2 ? 1 : -1;
+    const drift = sign * n * 0.0833 * (1 + (ci % 3) * 0.5);
+    let act, sub;
+    if (p < 0.004) { act = 'Doing baseline smoothing'; sub = p / 0.004; }
+    else if (f < 0.45) { act = 'Computing Fourier transforms'; sub = f / 0.45; }
+    else if (f < 0.65 && fft >= 128) { act = 'Searching for Gaussians'; sub = (f - 0.45) / 0.2; }
+    else { act = 'Searching for Pulses / Triplets'; sub = (f - (fft >= 128 ? 0.65 : 0.45)) / (fft >= 128 ? 0.35 : 0.55); }
+    return { k, fft, drift, act, sub: clamp(sub, 0, 1), res: BANDWIDTH / fft };
   }
 
-  function makeRow() {
+  // A spectrum row: fewer independent bins at short FFT lengths (blocky), plus the odd spike.
+  function makeRow(fft) {
     const row = new Float32Array(NF);
-    for (let i = 0; i < NF; i++) row[i] = -Math.log(1 - Math.random()) * 1.2; // chi-square-ish noise
-    const st = analysisState(wu.p);
-
-    // occasional narrow spike
-    if (Math.random() < 0.035) {
-      const b = Math.floor(rand(0, NF));
-      row[b] += rand(4, 14);
-      if (b > 0) row[b - 1] += rand(0, 2);
-      if (b < NF - 1) row[b + 1] += rand(0, 2);
-    }
-    // gaussian drifting through the telescope beam
-    if (!wu.gauss && Math.random() < 0.025) {
-      const len = Math.floor(rand(28, 44));
-      wu.gauss = { bin: Math.floor(rand(2, NF - 2)), len, sigma: len / rand(5, 7), amp: rand(1.5, 7), i: 0, samples: [] };
-    }
-    if (wu.gauss) {
-      const g = wu.gauss, c = g.len / 2;
-      const v = g.amp * Math.exp(-0.5 * ((g.i - c) / g.sigma) ** 2);
-      row[g.bin] += v;
-      if (g.bin > 0) row[g.bin - 1] += v * 0.25;
-      g.samples.push(row[g.bin]);
-      if (++g.i >= g.len) {
-        const fit = rand(0.4, 4.5);
-        const power = g.amp + rand(-0.3, 0.3);
-        const score = power / fit;
-        if (!wu.bestGauss || score > wu.bestGauss.score) {
-          wu.bestGauss = { power, fit, score, samples: g.samples, sigma: g.sigma, amp: g.amp, len: g.len,
-                           chirp: st.chirp, freq: rand(-1.2e6, 1.2e6) };
-        }
-        wu.gauss = null;
-      }
-    }
-    // track best spike
-    let mi = 0;
-    for (let i = 1; i < NF; i++) if (row[i] > row[mi]) mi = i;
-    if (!wu.bestSpike || row[mi] > wu.bestSpike.power) {
-      wu.bestSpike = { power: row[mi], bin: mi, spectrum: Float32Array.from(row), chirp: st.chirp,
-                       fft: st.fft || 8, freq: rand(-1.2e6, 1.2e6), score: Math.log10(row[mi] + 1) };
-    }
+    // short FFTs give coarse, smoother spectra; long FFTs give noisier ones
+    const k = fft < 256 ? 4 : 3;
+    for (let i = 0; i < NF; i++) { let v = 0; for (let j = 0; j < k; j++) v += expo(); row[i] = v / k; }
+    if (Math.random() < 0.5) { const b = Math.floor(rand(0, NF)); row[b] += rand(2.5, 4.5); }
     return row;
   }
 
-  for (let i = 0; i < NT; i++) rows.push(makeRow().map(() => 0));
+  // Data Analysis panel detail line + mini graph (regenerated as the search advances)
+  const detail = { key: '', text: '', series: [], curve: null, next: 0 };
+  function updateDetail(st, now) {
+    const key = st.act + st.k;
+    if (key === detail.key && now < detail.next) return;
+    const fresh = key !== detail.key;
+    detail.key = key;
+    detail.next = now + (st.act.startsWith('Searching for Pulses') ? 450 : 900);
+    detail.curve = null;
+    if (st.act === 'Computing Fourier transforms' || st.act === 'Doing baseline smoothing') {
+      const row = rows[Math.max(0, sweepRow - 1)];
+      detail.series = Array.from(row);
+      let mi = 0;
+      for (let i = 1; i < NF; i++) if (row[i] > row[mi]) mi = i;
+      const power = row[mi] * rand(9, 14);
+      wu.bestPeak = Math.max(wu.bestPeak, power);
+      detail.text = `Strongest peak: power ${power.toFixed(2)}  (${(mi / NF * BANDWIDTH).toFixed(1)} Hz at ${(sweepRow / NT * WU_TIME).toFixed(2)} sec)`;
+    } else if (st.act === 'Searching for Gaussians') {
+      const n = 64, c = rand(22, 42), sig = rand(5, 9), amp = rand(0.5, 3.5);
+      detail.series = Array.from({ length: n }, (_, i) => 1 + amp * Math.exp(-0.5 * ((i - c) / sig) ** 2) + (expo() - 1) * 0.7);
+      detail.curve = Array.from({ length: n }, (_, i) => 1 + amp * Math.exp(-0.5 * ((i - c) / sig) ** 2));
+      const fit = rand(0.6, 9);
+      detail.text = `Gaussian: power ${amp.toFixed(2)}, fit ${fit.toFixed(3)}, score ${(amp / Math.sqrt(fit)).toFixed(2)}`;
+    } else {
+      const n = 96;
+      if (fresh || !detail.series.length) detail.series = Array.from({ length: n }, () => 1 + (expo() - 1) * 0.35);
+      else detail.series = detail.series.map((v) => clamp(v * 0.6 + (1 + (expo() - 1) * 0.35) * 0.4 + (Math.random() < 0.04 ? rand(0.6, 1.4) : 0), 0, 4));
+      const power = rand(0.4, 1.6), period = rand(0.02, 1.2);
+      detail.text = Math.random() < 0.25
+        ? `Triplet: power ${(power * 6).toFixed(2)}, period ${period.toFixed(4)}`
+        : `Pulse: power ${power.toFixed(2)}, period ${period.toFixed(4)}, score ${(power * rand(0.3, 0.6)).toFixed(2)}`;
+    }
+  }
 
   // ---------- simulation tick ----------
   let saveAcc = 0;
@@ -156,264 +162,282 @@
       wu.p += dt / WU_SECONDS;
       wu.cpu += dt;
       user.cpu += dt;
-      rowAcc += dt * ROWS_PER_SEC;
-      while (rowAcc >= 1) {
-        rowAcc -= 1;
-        rows.unshift(makeRow());
-        if (rows.length > NT + 1) rows.length = NT + 1;
+      const st = slotState(Math.min(wu.p, 0.99999));
+      if (st.k !== lastSlot) { lastSlot = st.k; sweepRow = 0; }
+      if (st.act === 'Computing Fourier transforms' && sweepRow < NT) {
+        sweepAcc += dt * NT / (SLOT_SECONDS * 0.45 * 0.9);
+        while (sweepAcc >= 1 && sweepRow < NT) { sweepAcc -= 1; rows[sweepRow++] = makeRow(st.fft); graphDirty = true; }
       }
       if (wu.p >= 1) {
         wu.p = 1; phase = 'sending'; phaseT = 0;
         user.wus++; store.set('wus', user.wus); store.set('cpu', user.cpu);
       }
-    } else if (phase === 'sending' && phaseT > 4) {
+    } else if (phase === 'sending' && phaseT > 5) {
       phase = 'receiving'; phaseT = 0;
-    } else if (phase === 'receiving' && phaseT > 4) {
-      wu = newWorkUnit(); phase = 'analyze'; phaseT = 0;
-    }
-    if (phase !== 'analyze') {
-      // let the graph drain away while "talking to the server"
-      rowAcc += dt * ROWS_PER_SEC;
-      while (rowAcc >= 1) { rowAcc -= 1; rows.unshift(new Float32Array(NF)); rows.length = Math.min(rows.length, NT + 1); }
+    } else if (phase === 'receiving' && phaseT > 5) {
+      wu = newWorkUnit(); phase = 'analyze'; phaseT = 0; lastSlot = -1;
     }
     saveAcc += dt;
     if (saveAcc > 5) { saveAcc = 0; store.set('cpu', user.cpu); }
   }
 
   // ---------- drawing helpers ----------
-  const FONT = 'Verdana, Tahoma, "DejaVu Sans", Arial, sans-serif';
-  const C = {
-    panel: 'rgba(0, 8, 40, 0.92)', border: '#3d5aa0', title: '#ffd040', titleBar: '#0b1d5c',
-    label: '#8fa8e8', value: '#ffffff', dim: '#5b6fa8', accent: '#ffd040',
-  };
-
-  function font(px, bold) { ctx.font = `${bold ? 'bold ' : ''}${px}px ${FONT}`; }
-
-  function panel(x, y, w, h, title) {
-    ctx.fillStyle = C.panel; ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = C.titleBar; ctx.fillRect(x, y, w, 30);
-    ctx.strokeStyle = C.border; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-    ctx.beginPath(); ctx.moveTo(x, y + 30); ctx.lineTo(x + w, y + 30); ctx.stroke();
-    font(17, true); ctx.fillStyle = C.title; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-    ctx.fillText(title, x + 12, y + 16);
+  function font(px, bold, fam = FONT) { ctx.font = `${bold ? 'bold ' : ''}${px}px ${fam}`; }
+  function text(s, x, y, px, color = WHITE, align = 'left', bold = false) {
+    font(px, bold); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(s, x, y);
   }
-
-  function kv(x, y, label, value, labelW = 150) {
-    font(16); ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
-    ctx.fillStyle = C.label; ctx.fillText(label, x, y);
-    ctx.fillStyle = C.value; ctx.fillText(value, x + labelW, y);
-  }
-
-  function fmtDuration(sec) {
-    const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
-    return `${h} hr ${pad(m)} min ${s.toFixed(1).padStart(4, '0')} sec`;
-  }
-  function fmtRA(ra) { const h = Math.floor(ra), m = Math.floor((ra - h) * 60), s = Math.floor(((ra - h) * 60 - m) * 60); return `${h} hr ${pad(m)} min ${pad(s)} sec RA`; }
-  function fmtDec(dec) { return `${dec >= 0 ? '+' : ''}${dec.toFixed(2)} Dec`; }
-  function fmtHz(hz) { return `${hz >= 0 ? '+' : ''}${hz.toFixed(2)} Hz`; }
-
-  // ---------- panels ----------
-  function drawHeader(now) {
-    font(34, true); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ffd040'; ctx.fillText('RETRO', 24, 38);
-    const w = ctx.measureText('RETRO ').width;
-    ctx.fillStyle = '#ff3a2a'; ctx.fillText('SETI', 24 + w, 38);
-    font(15); ctx.fillStyle = C.dim;
-    ctx.fillText('Search for Extraterrestrial Intelligence  •  classic screensaver tribute', 24 + w + ctx.measureText('SETI').width * 2.3 + 14, 41);
-    ctx.textAlign = 'right'; font(16); ctx.fillStyle = C.label;
-    ctx.fillText(now.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }), VW - 24, 40);
-  }
-
-  function drawAnalysis(x, y, w, h) {
-    panel(x, y, w, h, 'Data Analysis');
-    const st = analysisState(wu.p);
-    font(20, true); ctx.fillStyle = C.accent; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    let act = st.act;
-    if (phase === 'sending') act = 'Work unit complete — sending results';
-    if (phase === 'receiving') act = 'Receiving new work unit';
-    const dots = '.'.repeat(1 + Math.floor(performance.now() / 400) % 3);
-    ctx.fillText(act + dots, x + 16, y + 64);
-    kv(x + 16, y + 98, 'Chirp rate:', phase === 'analyze' ? `${st.chirp.toFixed(4)} Hz/sec` : '—');
-    kv(x + 16, y + 124, 'FFT length:', phase === 'analyze' && st.fft ? String(st.fft) : '—');
-    kv(x + 16, y + 150, 'CPU time:', fmtDuration(wu.cpu));
-    kv(x + 16, y + 176, 'Work unit:', wu.name);
-    // progress bar
-    const bx = x + 16, by = y + h - 46, bw = w - 32 - 110, bh = 22;
-    ctx.fillStyle = '#000418'; ctx.fillRect(bx, by, bw, bh);
-    const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
-    g.addColorStop(0, '#1428c8'); g.addColorStop(0.5, '#00a0ff'); g.addColorStop(1, '#00dc5a');
-    ctx.fillStyle = g; ctx.fillRect(bx, by, bw * wu.p, bh);
-    ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
-    font(18, true); ctx.fillStyle = C.value; ctx.textAlign = 'right';
-    ctx.fillText(`${(wu.p * 100).toFixed(3)}%`, x + w - 16, by + 18);
-  }
-
-  function drawDataInfo(x, y, w, h) {
-    panel(x, y, w, h, 'Data Info');
-    const d = jdToDate(wu.jd);
-    kv(x + 16, y + 64, 'From:', fmtRA(wu.ra), 130);
-    kv(x + 16, y + 90, '', fmtDec(wu.dec), 130);
-    kv(x + 16, y + 120, 'Recorded on:', wu.jd.toFixed(5), 130);
-    kv(x + 16, y + 146, '', d.toUTCString().replace(' GMT', ' UTC'), 130);
-    kv(x + 16, y + 176, 'Source:', 'Arecibo Radio Observatory', 130);
-    kv(x + 16, y + 206, 'Base freq.:', `${(wu.base / 1e9).toFixed(9)} GHz`, 130);
-    kv(x + 16, y + 236, 'Angle range:', wu.angle.toFixed(3), 130);
-  }
-
-  function drawUserInfo(x, y, w, h) {
-    panel(x, y, w, h, 'User Info');
-    kv(x + 16, y + 64, 'Name:', user.name.slice(0, 28), 160);
-    kv(x + 16, y + 94, 'Work units:', user.wus.toLocaleString(), 160);
-    const hrs = Math.floor(user.cpu / 3600), mins = Math.floor(user.cpu / 60) % 60;
-    kv(x + 16, y + 124, 'Total CPU time:', `${hrs.toLocaleString()} hr ${pad(mins)} min`, 160);
-    kv(x + 16, y + 154, 'Avg per unit:', user.wus ? fmtDuration(user.cpu / user.wus).replace(/\.\d sec/, ' sec') : '—', 160);
-    kv(x + 16, y + 184, 'Listening since:', new Date(user.since).toLocaleDateString(), 160);
-    font(13); ctx.fillStyle = C.dim; ctx.textAlign = 'left';
-    ctx.fillText('Simulated data — no real signals were harmed.', x + 16, y + h - 18);
-  }
-
-  function drawGraph(x, y, w, h) {
-    panel(x, y, w, h, 'Power vs. Frequency vs. Time');
-    const DX = 6.6, DY = 5.6;                      // per-row depth offset
-    const left = x + 70, base = y + h - 70;        // front-left floor corner
-    const cw = (w - 110 - NT * DX) / NF;           // column pitch
-    const bw = cw * 0.72;
-    const maxH = base - (y + 50) - NT * DY;
-    const fw = NF * cw;
-    const ddx = DX * 0.7, ddy = DY * 0.7;          // bar depth
-
-    // floor
-    ctx.lineWidth = 1;
-    ctx.fillStyle = 'rgba(20, 40, 110, 0.35)';
+  function roundRect(x, y, w, h, r) {
     ctx.beginPath();
-    ctx.moveTo(left, base); ctx.lineTo(left + fw, base);
-    ctx.lineTo(left + fw + NT * DX, base - NT * DY); ctx.lineTo(left + NT * DX, base - NT * DY);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = 'rgba(80, 110, 190, 0.45)';
-    ctx.beginPath();
-    for (let i = 0; i <= NF; i += 6) { ctx.moveTo(left + i * cw, base); ctx.lineTo(left + i * cw + NT * DX, base - NT * DY); }
-    for (let t = 0; t <= NT; t += 5) { ctx.moveTo(left + t * DX, base - t * DY); ctx.lineTo(left + fw + t * DX, base - t * DY); }
-    ctx.stroke();
-    // back wall (power axis)
-    ctx.beginPath();
-    const bwx = left + NT * DX, bwy = base - NT * DY;
-    for (let k = 0; k <= 4; k++) { ctx.moveTo(bwx, bwy - maxH * k / 4); ctx.lineTo(bwx + fw, bwy - maxH * k / 4); }
-    ctx.moveTo(bwx, bwy); ctx.lineTo(bwx, bwy - maxH);
-    ctx.strokeStyle = 'rgba(80, 110, 190, 0.22)'; ctx.stroke();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
 
-    // bars, back to front, left to right
-    const frac = rowAcc % 1;
-    for (let t = rows.length - 1; t >= 0; t--) {
-      const tt = t + frac;
-      if (tt > NT - 0.5) continue;
-      const row = rows[t];
-      const ox = left + tt * DX, oy = base - tt * DY;
-      for (let i = 0; i < NF; i++) {
-        const v = 1 - Math.exp(-row[i] / 5.5);
-        const hgt = Math.max(1.5, v * maxH);
-        const sh = SHADES[Math.min(LEVELS - 1, Math.floor(v * LEVELS))];
-        const bx = ox + i * cw, by = oy;
-        ctx.fillStyle = sh.side;
-        ctx.beginPath();
-        ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw + ddx, by - ddy);
-        ctx.lineTo(bx + bw + ddx, by - hgt - ddy); ctx.lineTo(bx + bw, by - hgt); ctx.fill();
-        ctx.fillStyle = sh.top;
-        ctx.beginPath();
-        ctx.moveTo(bx, by - hgt); ctx.lineTo(bx + bw, by - hgt);
-        ctx.lineTo(bx + bw + ddx, by - hgt - ddy); ctx.lineTo(bx + ddx, by - hgt - ddy); ctx.fill();
-        ctx.fillStyle = sh.front;
-        ctx.fillRect(bx, by - hgt, bw, hgt);
+  // ---------- header ----------
+  function drawLogo() {
+    // globe
+    const g = ctx.createRadialGradient(44, 30, 4, 52, 38, 34);
+    g.addColorStop(0, '#9ff3ff'); g.addColorStop(0.45, '#2fa6b8'); g.addColorStop(1, '#14306a');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(54, 38, 31, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(60, 200, 150, 0.75)';
+    ctx.beginPath(); ctx.ellipse(46, 30, 12, 17, -0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(66, 50, 8, 10, 0.4, 0, Math.PI * 2); ctx.fill();
+    // purple signal wave trailing off to the right
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.beginPath();
+      for (let x = 70; x <= 250; x += 2) {
+        const f = (x - 70) / 180;
+        const y = 38 - Math.sin(f * Math.PI * 4.2) * (16 - f * 6);
+        x === 70 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       }
+      const lg = ctx.createLinearGradient(70, 0, 250, 0);
+      lg.addColorStop(0, pass ? '#c9a8ff' : '#6a3fd0'); lg.addColorStop(1, 'rgba(110, 70, 220, 0)');
+      ctx.strokeStyle = lg; ctx.lineWidth = pass ? 3 : 10; ctx.lineCap = 'round'; ctx.stroke();
+    }
+  }
+
+  function drawDish(x, y) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(-0.35);
+    ctx.fillStyle = GREEN;
+    ctx.beginPath(); ctx.ellipse(0, 0, 24, 11, 0, 0, Math.PI); ctx.fill();
+    ctx.fillStyle = '#1d8f68';
+    ctx.beginPath(); ctx.ellipse(0, 0, 24, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = GREEN; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(10, -16); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawHeader() {
+    drawLogo();
+    ctx.letterSpacing = '1.5px';
+    font(27, true, TITLE_FONT); ctx.fillStyle = WHITE; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('The Search for', 198, 32);
+    ctx.fillText('Extraterrestrial Intelligence', 285, 63);
+    const w = ctx.measureText('Extraterrestrial Intelligence ').width;
+    ctx.fillStyle = GREEN; ctx.fillText('at HOME', 285 + w + 6, 63);
+    const w2 = ctx.measureText('at HOME').width;
+    ctx.letterSpacing = '0px';
+    drawDish(285 + w + w2 + 40, 40);
+    text('Press F1 for info', 995, 31, 21);
+    text('Version 3.08', 1435, 31, 21, WHITE, 'right');
+    text(location.host ? (location.host + location.pathname).replace(/\/(index\.html)?$/, '') : 'retro-seti', 1210, 58, 17, WHITE, 'center');
+  }
+
+  // ---------- purple frame (the classic "console" look) ----------
+  function drawFrame() {
+    ctx.fillStyle = PURPLE;
+    roundRect(14, 87, 1471, 13, 6.5); ctx.fill();          // top bar
+    roundRect(14, 437, 1471, 13, 6.5); ctx.fill();         // bottom bar
+    ctx.fillRect(790, 92, 120, 352);                       // vertical spine
+    roundRect(860, 268, 625, 16, 8); ctx.fill();           // right divider
+    ctx.fillStyle = '#000';
+    roundRect(-60, 100, 882, 337, 30); ctx.fill();        // Data Analysis
+    roundRect(882, 100, 700, 168, 30); ctx.fill();        // Data Info
+    roundRect(882, 284, 700, 153, 30); ctx.fill();        // User Info
+  }
+
+  // ---------- Data Analysis ----------
+  function drawAnalysis() {
+    const st = slotState(Math.min(wu.p, 0.99999));
+    text('Data Analysis', 361, 140, 22, WHITE, 'center');
+    let act = st.act, sub = st.sub;
+    if (phase === 'sending') { act = 'Sending result to server'; sub = clamp(phaseT / 5, 0, 1); }
+    if (phase === 'receiving') { act = 'Getting new data unit'; sub = clamp(phaseT / 5, 0, 1); }
+    text(act, 24, 167, 21);
+    text(`${Math.floor(sub * 100)}%`, 565, 167, 21, WHITE, 'right');
+    ctx.fillStyle = WHITE; ctx.fillRect(582, 153, Math.max(2, 200 * sub), 11);
+
+    if (phase === 'analyze') {
+      text(`Doppler drift rate: ${st.drift.toFixed(4)} Hz/sec`, 24, 195, 21);
+      text(`Resolution: ${st.res < 1 ? st.res.toFixed(3) : st.res.toFixed(3)} Hz`, 362, 195, 21);
+      text(detail.text, 24, 223, 21);
+      drawMiniGraph(24, 238, 773, 96);
     }
 
-    // axes labels
-    font(15); ctx.fillStyle = C.label; ctx.textBaseline = 'alphabetic';
-    ctx.textAlign = 'center'; ctx.fillText('Frequency →', left + fw / 2, base + 30);
-    ctx.save(); ctx.translate(left + fw + NT * DX / 2 + 26, base - NT * DY / 2 + 10);
-    ctx.rotate(-Math.atan2(DY, DX)); ctx.fillText('← Time', 0, 0); ctx.restore();
-    ctx.save(); ctx.translate(left - 26, base - maxH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('Power →', 0, 0); ctx.restore();
-    font(13); ctx.fillStyle = C.dim; ctx.textAlign = 'left';
-    ctx.fillText(`${(wu.base / 1e9).toFixed(6)} GHz`, left, base + 52);
-    ctx.textAlign = 'right'; ctx.fillText(`+${(NF * 9765.625 / 1000 / 4).toFixed(1)} kHz`, left + fw, base + 52);
-
-    // colour legend
-    const lx = x + w - 40, ly = y + 50, lh = 140;
-    for (let k = 0; k < lh; k++) { const [r, g, b] = heat(1 - k / lh); ctx.fillStyle = `rgb(${r},${g},${b})`; ctx.fillRect(lx, ly + k, 14, 1); }
-    ctx.strokeStyle = C.border; ctx.strokeRect(lx - 0.5, ly - 0.5, 15, lh + 1);
-  }
-
-  function plotFrame(x, y, w, h) {
-    ctx.fillStyle = '#000418'; ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = 'rgba(80,110,190,0.25)'; ctx.lineWidth = 1; ctx.beginPath();
-    for (let k = 1; k < 4; k++) { ctx.moveTo(x, y + h * k / 4); ctx.lineTo(x + w, y + h * k / 4); }
+    // 3D tube progress bar
+    const x = 24, y = 354, w = 746, h = 36, dx = 12, dy = -12;
+    const fw = w * wu.p;
+    if (fw > 0.5) {
+      ctx.fillStyle = '#b0141e'; ctx.fillRect(x, y, fw, h);
+      ctx.fillStyle = '#e04048';
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx, y + dy); ctx.lineTo(x + fw + dx, y + dy); ctx.lineTo(x + fw, y); ctx.fill();
+      ctx.fillStyle = '#6e0a10';
+      ctx.beginPath(); ctx.moveTo(x + fw, y); ctx.lineTo(x + fw + dx, y + dy); ctx.lineTo(x + fw + dx, y + dy + h); ctx.lineTo(x + fw, y + h); ctx.fill();
+    }
+    ctx.strokeStyle = GREY; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.moveTo(x, y); ctx.lineTo(x + dx, y + dy); ctx.lineTo(x + w + dx, y + dy); ctx.lineTo(x + w + dx, y + h + dy); ctx.lineTo(x + w, y + h);
+    ctx.moveTo(x + w, y); ctx.lineTo(x + w + dx, y + dy);
     ctx.stroke();
-    ctx.strokeStyle = C.border; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+    text(`Overall:  ${(wu.p * 100).toFixed(3)}% done`, 24, 418, 21);
+    const c = wu.cpu, hh = Math.floor(c / 3600), mm = Math.floor(c / 60) % 60, ss = (c % 60).toFixed(1).padStart(4, '0');
+    text(`CPU time: ${hh} hr ${pad(mm)} min ${ss} sec`, 747, 418, 21, WHITE, 'right');
   }
 
-  function drawGaussian(x, y, w, h) {
-    panel(x, y, w, h, 'Best Gaussian');
-    const g = wu.bestGauss;
-    const px = x + 16, py = y + 44, pw = w - 32, ph = h - 130;
-    plotFrame(px, py, pw, ph);
-    if (!g) { font(15); ctx.fillStyle = C.dim; ctx.textAlign = 'center'; ctx.fillText('No gaussians found yet', px + pw / 2, py + ph / 2); }
-    else {
-      const n = g.samples.length;
-      const maxV = Math.max(g.amp + 1.5, ...g.samples) * 1.08;
-      const sw = pw / n;
-      for (let i = 0; i < n; i++) {
-        const v = g.samples[i] / maxV, bh = v * (ph - 4);
-        const sh = SHADES[Math.min(LEVELS - 1, Math.floor(clamp(v, 0, 0.999) * LEVELS))];
-        ctx.fillStyle = sh.front; ctx.fillRect(px + i * sw + 1, py + ph - bh - 2, Math.max(1, sw - 2), bh);
-      }
-      ctx.strokeStyle = '#ff3a2a'; ctx.lineWidth = 2.5; ctx.beginPath();
-      for (let k = 0; k <= 120; k++) {
-        const i = k / 120 * n, c = g.len / 2;
-        const v = (1.2 + g.amp * Math.exp(-0.5 * ((i - c) / g.sigma) ** 2)) / maxV;
-        const xx = px + i * sw, yy = py + ph - 2 - v * (ph - 4);
-        k ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy);
-      }
+  function drawMiniGraph(x, y, w, h) {
+    const s = detail.series;
+    if (!s.length) return;
+    let max = 0;
+    for (const v of s) max = Math.max(max, v);
+    if (detail.curve) for (const v of detail.curve) max = Math.max(max, v);
+    max = Math.max(max, 1.5);
+    const sw = w / s.length;
+    ctx.strokeStyle = LINE_RED; ctx.lineWidth = 2; ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    for (let i = 0; i < s.length; i++) {
+      const yy = y + h - (s[i] / max) * h;
+      if (i === 0) ctx.moveTo(x, yy); else ctx.lineTo(x + i * sw, yy);
+      ctx.lineTo(x + (i + 1) * sw, yy);
+    }
+    ctx.stroke();
+    if (detail.curve) {
+      ctx.strokeStyle = WHITE; ctx.lineWidth = 2; ctx.beginPath();
+      detail.curve.forEach((v, i) => { const xx = x + (i + 0.5) * sw, yy = y + h - (v / max) * h; i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); });
       ctx.stroke();
-      kv(px, y + h - 54, 'Power:', g.power.toFixed(3), 70);
-      kv(px + pw / 2, y + h - 54, 'Fit:', g.fit.toFixed(3), 50);
-      kv(px, y + h - 26, 'Score:', g.score.toFixed(3), 70);
-      kv(px + pw / 2, y + h - 26, 'Chirp:', g.chirp.toFixed(3), 60);
     }
   }
 
-  function drawSpike(x, y, w, h) {
-    panel(x, y, w, h, 'Best Spike');
-    const s = wu.bestSpike;
-    const px = x + 16, py = y + 44, pw = w - 32, ph = h - 130;
-    plotFrame(px, py, pw, ph);
-    if (!s) return;
-    const maxV = s.power * 1.08, sw = pw / NF;
-    for (let i = 0; i < NF; i++) {
-      const v = s.spectrum[i] / maxV, bh = v * (ph - 4);
-      ctx.fillStyle = i === s.bin ? '#ff3a2a' : '#0090ee';
-      ctx.fillRect(px + i * sw + 1, py + ph - bh - 2, Math.max(1, sw - 2), bh);
+  // ---------- Data Info / User Info ----------
+  function drawDataInfo() {
+    text('Data Info', 1165, 140, 22, WHITE, 'center');
+    const raH = Math.floor(wu.ra), raM = Math.floor((wu.ra - raH) * 60), raS = Math.floor(((wu.ra - raH) * 60 - raM) * 60);
+    const ad = Math.abs(wu.dec), dD = Math.floor(ad), dM = Math.floor((ad - dD) * 60), dS = Math.floor(((ad - dD) * 60 - dM) * 60);
+    text(`From: ${raH} hr ${String(raM).padStart(2)}' ${String(raS).padStart(2)}" RA, ${wu.dec < 0 ? '-' : '+'} ${dD} deg ${dM}' ${dS}" Dec`, 906, 167, 21);
+    const d = wu.recorded;
+    text(`Recorded on: ${DAYS[d.getUTCDay()]} ${MONS[d.getUTCMonth()]} ${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} ${d.getUTCFullYear()} GMT`, 906, 195, 21);
+    text('Source: Arecibo Radio Observatory', 906, 223, 21);
+    text(`Base Frequency: ${(wu.base / 1e9).toFixed(9)} GHz`, 906, 251, 21);
+  }
+
+  function drawUserInfo() {
+    text('User Info', 1163, 323, 22, WHITE, 'center');
+    text(`Name: ${user.name.slice(0, 34)}`, 906, 351, 21);
+    text(`Data units completed: ${user.wus}`, 906, 379, 21);
+    const c = user.cpu, hh = Math.floor(c / 3600), mm = Math.floor(c / 60) % 60, ss = (c % 60).toFixed(1).padStart(4, '0');
+    text(`Total computer time: ${hh} hr ${pad(mm)} min ${ss} sec`, 906, 407, 21);
+  }
+
+  // ---------- the 3D power / frequency / time graph ----------
+  // Floor: front edge (232..1400, 848), depth runs up-left to (118..1286, 570).
+  const G = { fx: 232, fy: 848, fw: 1168, ddx: -114 / NT, ddy: -278 / NT, maxH: 92 };
+  const graphCanvas = document.createElement('canvas');
+  const gctx = graphCanvas.getContext('2d');
+  let graphScale = 0;
+
+  function renderGraphLayer(scale) {
+    const w = Math.ceil(VW * scale), h = Math.ceil((VH - 455) * scale);
+    if (graphCanvas.width !== w || graphCanvas.height !== h) { graphCanvas.width = w; graphCanvas.height = h; }
+    const g = gctx;
+    g.setTransform(scale, 0, 0, scale, 0, -455 * scale);
+    g.clearRect(0, 455, VW, VH);
+    const cw = G.fw / NF, { ddx, ddy, maxH } = G;
+    g.lineWidth = 1; g.strokeStyle = '#000'; g.lineJoin = 'miter';
+
+    // back to front; within a row right to left (left side faces are the visible ones)
+    for (let t = NT - 1; t >= 0; t--) {
+      const row = rows[t];
+      const ox = G.fx + t * ddx, oy = G.fy + t * ddy;
+      for (let i = NF - 1; i >= 0; i--) {
+        const v = row[i];
+        const hgt = Math.min(maxH * 1.25, 4 + v * 30);
+        const lv = Math.min(LEVELS - 1, Math.floor(Math.max(0, hgt - 30) / (maxH * 1.25 - 30) * LEVELS));
+        const c = COLS[i][lv];
+        const x = ox + i * cw, y = oy;
+        // left side
+        g.fillStyle = c.side;
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - hgt); g.lineTo(x + ddx, y - hgt + ddy); g.lineTo(x + ddx, y + ddy); g.closePath(); g.fill();
+        // top
+        g.fillStyle = c.top;
+        g.beginPath(); g.moveTo(x, y - hgt); g.lineTo(x + cw, y - hgt); g.lineTo(x + cw + ddx, y - hgt + ddy); g.lineTo(x + ddx, y - hgt + ddy); g.closePath(); g.fill(); g.stroke();
+        // front
+        g.fillStyle = c.front;
+        g.fillRect(x, y - hgt, cw, hgt);
+        g.strokeRect(x, y - hgt, cw, hgt);
+      }
     }
-    kv(px, y + h - 54, 'Power:', s.power.toFixed(3), 70);
-    kv(px + pw / 2, y + h - 54, 'FFT len:', String(s.fft), 80);
-    kv(px, y + h - 26, 'Freq:', fmtHz(s.freq), 70);
-    kv(px + pw / 2, y + h - 26, 'Chirp:', s.chirp.toFixed(3), 80);
+
+    // box outline (thin grey), drawn over the bars like the original
+    const bx = G.fx + NT * ddx, by = G.fy + NT * ddy;
+    g.strokeStyle = '#8c8c8c'; g.lineWidth = 1.5;
+    g.beginPath();
+    g.moveTo(bx, by); g.lineTo(G.fx, G.fy);                                  // left floor edge
+    g.moveTo(bx, by); g.lineTo(bx, by - maxH);                               // back-left post
+    g.lineTo(bx + G.fw, by - maxH);                                          // back top
+    g.lineTo(G.fx + G.fw, G.fy - maxH);                                      // right top edge
+    g.lineTo(G.fx + G.fw, G.fy);                                             // front-right post
+    g.moveTo(G.fx, G.fy); g.lineTo(G.fx + G.fw, G.fy);                       // front edge
+    g.stroke();
   }
 
-  function drawOverlay() {
-    if (phase === 'analyze') return;
-    const msg = phase === 'sending' ? 'Sending results to the server' : 'Receiving a new work unit';
-    const t = phaseT / 4;
-    const w = 640, h = 130, x = (VW - w) / 2, y = 470;
-    ctx.fillStyle = 'rgba(0, 6, 30, 0.95)'; ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = C.accent; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
-    font(24, true); ctx.fillStyle = C.accent; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText(msg + '...', VW / 2, y + 52);
-    ctx.fillStyle = '#000418'; ctx.fillRect(x + 40, y + 76, w - 80, 20);
-    ctx.fillStyle = '#00dc5a'; ctx.fillRect(x + 40, y + 76, (w - 80) * clamp(t, 0, 1), 20);
-    ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.strokeRect(x + 40.5, y + 76.5, w - 81, 19);
+  function drawGraph(scale) {
+    if (graphDirty || scale !== graphScale) { renderGraphLayer(scale); graphDirty = false; graphScale = scale; }
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const m = view;
+    ctx.drawImage(graphCanvas, m.ox, m.oy + 455 * m.s, graphCanvas.width * (m.s / scale), graphCanvas.height * (m.s / scale));
+    ctx.restore();
+
+    // axis labels
+    const bx = G.fx + NT * G.ddx, by = G.fy + NT * G.ddy;
+    text(WU_TIME.toFixed(1), 95, by + 14, 21, WHITE, 'right');
+    text('Time (sec)', 52, 716, 21);
+    text('0', 202, 842, 21, WHITE, 'right');
+    text('0.0', 245, 875, 21);
+    text('Frequency (Hz)', 842, 875, 21, WHITE, 'center');
+    text((BANDWIDTH - 0.005).toFixed(3), 1407, 875, 21, WHITE, 'right');
+    text('Power', 1449, 826, 21, WHITE, 'center');
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(1449, 800); ctx.lineTo(1449, 728); ctx.moveTo(1440, 740); ctx.lineTo(1449, 728); ctx.lineTo(1458, 740); ctx.stroke();
+    void bx;
   }
 
-  let showPanels = params.get('panels') !== '0';
+  // ---------- F1 info box ----------
+  let showInfo = false;
+  function drawInfo() {
+    if (!showInfo) return;
+    const x = 300, y = 180, w = 900, h = 470;
+    ctx.fillStyle = 'rgba(0,0,0,0.92)'; roundRect(x, y, w, h, 24); ctx.fill();
+    ctx.strokeStyle = PURPLE; ctx.lineWidth = 6; roundRect(x, y, w, h, 24); ctx.stroke();
+    const lines = [
+      ['Retro SETI', 26, true],
+      ['A tribute to the classic SETI@home screensaver (1999–2005).', 19],
+      ['The data shown is simulated — nothing is downloaded or analysed.', 19],
+      ['Not affiliated with UC Berkeley or the SETI@home project.', 19],
+      ['', 10],
+      ['F1  this box          F  fullscreen          N  set your name', 19],
+      ['Your display is kept awake while this page is visible.', 19],
+      ['', 10],
+      ['The real SETI@home ran from May 1999; the classic client', 19],
+      ['retired on December 15, 2005 in favour of BOINC.', 19],
+    ];
+    let yy = y + 60;
+    for (const [s, px, b] of lines) { text(s, VW / 2, yy, px, b ? GREEN : WHITE, 'center', !!b); yy += px + 16; }
+    text('press any key to close', VW / 2, y + h - 26, 15, GREY, 'center');
+  }
 
+  // ---------- frame ----------
+  const view = { s: 1, ox: 0, oy: 0 };
   function render() {
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
@@ -421,20 +445,17 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
     const s = Math.min(cw / VW, ch / VH);
-    ctx.setTransform(s, 0, 0, s, (cw - VW * s) / 2, (ch - VH * s) / 2);
+    view.s = s; view.ox = (cw - VW * s) / 2; view.oy = (ch - VH * s) / 2;
+    ctx.setTransform(s, 0, 0, s, view.ox, view.oy);
 
-    drawHeader(new Date());
-    if (showPanels) {
-      drawAnalysis(20, 76, 600, 262);
-      drawDataInfo(636, 76, 468, 262);
-      drawUserInfo(1120, 76, 460, 262);
-      drawGraph(20, 354, 1064, 626);
-      drawGaussian(1100, 354, 480, 305);
-      drawSpike(1100, 675, 480, 305);
-    } else {
-      drawGraph(20, 76, 1560, 904);
-    }
-    drawOverlay();
+    drawHeader();
+    drawFrame();
+    updateDetail(slotState(Math.min(wu.p, 0.99999)), performance.now());
+    drawAnalysis();
+    drawDataInfo();
+    drawUserInfo();
+    drawGraph(s);
+    drawInfo();
   }
 
   // ---------- main loop ----------
@@ -447,13 +468,11 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  // keep simulating (slowly) if the tab is hidden; rAF pauses then
   setInterval(() => { if (document.hidden) { const now = performance.now(); tick(Math.min(5, (now - last) / 1000)); last = now; } }, 1000);
 
   // ---------- keep the display awake ----------
   const wakeBtn = document.getElementById('wakeBtn');
   let wakeLock = null, wakeWanted = store.get('awake', true), fallbackVideo = null;
-
   function setWakeLabel(state) { wakeBtn.textContent = 'Display awake: ' + state; }
 
   async function acquireWake() {
@@ -465,13 +484,11 @@
         setWakeLabel('ON');
         wakeLock.addEventListener('release', () => { wakeLock = null; setWakeLabel(wakeWanted ? 'paused' : 'off'); });
         return;
-      } catch (e) { /* fall through to video fallback */ }
+      } catch (e) { /* fall through */ }
     }
     startVideoFallback();
   }
-
-  // Fallback for browsers without the Wake Lock API: a tiny, muted, looping
-  // video stream generated from a canvas. Needs a user gesture on some browsers.
+  // Fallback for browsers without the Wake Lock API: a tiny muted looping video stream.
   function startVideoFallback() {
     try {
       if (!fallbackVideo) {
@@ -488,13 +505,11 @@
       fallbackVideo.play().then(() => setWakeLabel('ON (video)'), () => setWakeLabel('click to enable'));
     } catch (e) { setWakeLabel('unsupported'); }
   }
-
   function releaseWake() {
     if (wakeLock) { const l = wakeLock; wakeLock = null; l.release().catch(() => {}); }
     if (fallbackVideo) fallbackVideo.pause();
     setWakeLabel('off');
   }
-
   wakeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     wakeWanted = !wakeWanted; store.set('awake', wakeWanted);
@@ -519,11 +534,13 @@
   document.getElementById('fsBtn').addEventListener('click', toggleFullscreen);
   document.getElementById('nameBtn').addEventListener('click', askName);
   canvas.addEventListener('dblclick', toggleFullscreen);
+  canvas.addEventListener('click', () => { showInfo = false; });
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'F1') { e.preventDefault(); showInfo = !showInfo; return; }
+    if (showInfo) { showInfo = false; return; }
     const k = e.key.toLowerCase();
     if (k === 'f') toggleFullscreen();
-    else if (k === 'h') showPanels = !showPanels;
     else if (k === 'n') askName();
   });
 
@@ -536,4 +553,7 @@
   }
   ['mousemove', 'pointerdown', 'keydown', 'touchstart'].forEach((ev) => document.addEventListener(ev, poke, { passive: true }));
   poke();
+
+  // pre-fill the graph so the first frame isn't empty
+  for (let t = 0; t < NT; t++) rows[t] = makeRow(1024);
 })();

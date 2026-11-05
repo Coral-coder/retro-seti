@@ -1,9 +1,12 @@
 # Retro SETI
 
-A tribute to the classic (1999–2005) SETI@home screensaver: a 3D power/frequency/time
-bar graph, Data Analysis / Data Info / User Info panels, best Gaussian and best spike plots,
-and simulated work units that finish and get replaced. **All data is simulated.** Nothing is
-downloaded or uploaded.
+A tribute to the classic (v3.x, 1999–2005) SETI@home screensaver. The layout, purple frame,
+fonts, palette and the red-to-cyan 3D power/frequency/time graph are matched against
+screenshots of the original v3.07 client: Data Analysis (activity, Doppler drift rate,
+resolution, pulse/gaussian/peak readout, red mini-graph, 3D tube progress bar), Data Info,
+User Info, and the graph that sweeps front-to-back for each FFT pass. Data units complete,
+"send" and get replaced. **All data is simulated.** Nothing is downloaded or uploaded. The
+globe/wave logo and dish are redrawn, not copied from the original.
 
 ## Web version (GitHub Pages)
 
@@ -12,8 +15,8 @@ downloaded or uploaded.
 - **Keeps the display awake** using the Screen Wake Lock API (with a muted-video fallback for
   browsers without it). The *Display awake* button toggles it; the browser releases the lock
   when the tab is hidden and the page re-takes it when you come back.
-- **F** or double-click: fullscreen · **H**: hide panels (graph only) · **N**: set your name
-- URL options: `?name=Your+Name`, `?wu=15` (minutes per work unit), `?panels=0`
+- **F1**: info box · **F** or double-click: fullscreen · **N**: set your name
+- URL options: `?name=Your+Name`, `?wu=15` (minutes per data unit)
 - Work units completed and total CPU time are remembered in `localStorage`.
 
 Deployment: `.github/workflows/pages.yml` runs on every push to `main`, builds the Windows
@@ -32,8 +35,8 @@ Screen Saver Settings.
 | Command | What it does |
 | --- | --- |
 | `RetroSETI.scr /s` | Fullscreen on every monitor; mouse/keyboard exits |
-| `RetroSETI.scr /w` | Normal window (F11 / double-click = fullscreen, H = panels) |
-| `RetroSETI.scr /c` | Settings: name, minutes per work unit, panels, reset stats |
+| `RetroSETI.scr /w` | Normal window (F11 / double-click = fullscreen, F1 = info) |
+| `RetroSETI.scr /c` | Settings: name, minutes per data unit, reset stats |
 | `RetroSETI.scr /p <hwnd>` | Little preview in Screen Saver Settings |
 
 While running (`/s` or `/w`) it calls `SetThreadExecutionState(ES_DISPLAY_REQUIRED |

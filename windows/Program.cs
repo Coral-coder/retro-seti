@@ -2,7 +2,7 @@
 //   RetroSETI.scr /s          run fullscreen on every monitor (what Windows calls)
 //   RetroSETI.scr /p <hwnd>   draw the little preview in Screen Saver Settings
 //   RetroSETI.scr /c          settings dialog (also: no arguments)
-//   RetroSETI.scr /w          run in a normal window (F11 = fullscreen, H = panels)
+//   RetroSETI.scr /w          run in a normal window (F11 = fullscreen, F1 = info)
 // While running in /s or /w mode it keeps the display on and blocks sleep.
 using System;
 using System.Collections.Generic;
@@ -93,7 +93,7 @@ namespace RetroSeti
             if (screensaver) { Application.Exit(); return; }
             if (e.KeyCode == Keys.F11 || e.KeyCode == Keys.F) ToggleFullscreen();
             else if (e.KeyCode == Keys.Escape && fullscreen) ToggleFullscreen();
-            else if (e.KeyCode == Keys.H) { Settings.ShowPanels = !Settings.ShowPanels; Settings.SaveSettings(); }
+            else if (e.KeyCode == Keys.F1) Renderer.ShowInfo = !Renderer.ShowInfo;
         }
 
         void ToggleFullscreen()

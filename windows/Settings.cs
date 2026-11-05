@@ -10,9 +10,8 @@ namespace RetroSeti
     static class Settings
     {
         const string Key = @"Software\RetroSETI";
-        public static string Name = "Anonymous Listener";
+        public static string Name = "anonymous";
         public static double WuMinutes = 15;
-        public static bool ShowPanels = true;
         public static int Wus;
         public static double Cpu;
         public static DateTime Since = DateTime.Now;
@@ -25,7 +24,6 @@ namespace RetroSeti
                 {
                     Name = k.GetValue("Name", Name) as string ?? Name;
                     WuMinutes = ParseD(k.GetValue("WuMinutes"), WuMinutes);
-                    ShowPanels = ParseD(k.GetValue("ShowPanels"), 1) != 0;
                     Wus = (int)ParseD(k.GetValue("Wus"), 0);
                     Cpu = ParseD(k.GetValue("Cpu"), 0);
                     var s = k.GetValue("Since") as string;
@@ -47,7 +45,6 @@ namespace RetroSeti
                 {
                     k.SetValue("Name", Name);
                     k.SetValue("WuMinutes", WuMinutes.ToString(CultureInfo.InvariantCulture));
-                    k.SetValue("ShowPanels", ShowPanels ? "1" : "0");
                 }
             }
             catch { }
@@ -83,12 +80,11 @@ namespace RetroSeti
             var txtName = new TextBox { Text = Settings.Name, Location = new Point(150, 16), Width = 210, MaxLength = 40 };
             var lblWu = new Label { Text = "Minutes per work unit:", Location = new Point(16, 56), AutoSize = true };
             var numWu = new NumericUpDown { Minimum = 1, Maximum = 600, Value = (decimal)Math.Max(1, Math.Min(600, Settings.WuMinutes)), Location = new Point(150, 52), Width = 80 };
-            var chkPanels = new CheckBox { Text = "Show info panels (H toggles while running)", Checked = Settings.ShowPanels, Location = new Point(16, 90), AutoSize = true };
             var info = new Label
             {
                 Text = "While running, Retro SETI keeps the display on and stops the PC going to sleep.\n" +
                        "Run \"RetroSETI.scr /w\" for a normal window (F11 = fullscreen).",
-                Location = new Point(16, 120), Size = new Size(350, 50), ForeColor = SystemColors.GrayText,
+                Location = new Point(16, 96), Size = new Size(350, 70), ForeColor = SystemColors.GrayText,
             };
             var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(196, 186), Width = 80 };
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(284, 186), Width = 80 };
@@ -99,14 +95,13 @@ namespace RetroSeti
                 { Settings.Wus = 0; Settings.Cpu = 0; Settings.SaveStats(); }
             };
             AcceptButton = ok; CancelButton = cancel;
-            Controls.AddRange(new Control[] { lblName, txtName, lblWu, numWu, chkPanels, info, ok, cancel, reset });
+            Controls.AddRange(new Control[] { lblName, txtName, lblWu, numWu, info, ok, cancel, reset });
 
             FormClosing += (s, e) =>
             {
                 if (DialogResult != DialogResult.OK) return;
-                Settings.Name = string.IsNullOrWhiteSpace(txtName.Text) ? "Anonymous Listener" : txtName.Text.Trim();
+                Settings.Name = string.IsNullOrWhiteSpace(txtName.Text) ? "anonymous" : txtName.Text.Trim();
                 Settings.WuMinutes = (double)numWu.Value;
-                Settings.ShowPanels = chkPanels.Checked;
                 Settings.SaveSettings();
             };
         }

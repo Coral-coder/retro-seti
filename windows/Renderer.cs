@@ -1,8 +1,9 @@
-// GDI+ renderer. Layout mirrors web/seti.js (virtual 1600x1000 canvas, letterboxed).
+// GDI+ renderer. Mirrors web/seti.js: virtual 1500x885 canvas (the original's aspect), letterboxed.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
 
@@ -10,62 +11,79 @@ namespace RetroSeti
 {
     static class Renderer
     {
-        const float VW = 1600, VH = 1000;
-        const int Levels = 64;
-        const string FontName = "Verdana";
+        const float VW = 1500, VH = 885, GraphTop = 455;
+        const int Levels = 12;
+        const string BodyFont = "Arial", TitleFont = "Arial Black";
+        static readonly CultureInfo CI = CultureInfo.InvariantCulture;
 
-        static readonly Color CPanel = Color.FromArgb(235, 0, 8, 40), CBorder = Color.FromArgb(0x3d, 0x5a, 0xa0),
-            CTitle = Color.FromArgb(0xff, 0xd0, 0x40), CTitleBar = Color.FromArgb(0x0b, 0x1d, 0x5c),
-            CLabel = Color.FromArgb(0x8f, 0xa8, 0xe8), CValue = Color.White, CDim = Color.FromArgb(0x5b, 0x6f, 0xa8),
-            CRed = Color.FromArgb(0xff, 0x3a, 0x2a), CPlot = Color.FromArgb(0, 4, 24);
+        static readonly Color Purple = Color.FromArgb(0x9a, 0x66, 0xf6), Green = Color.FromArgb(0x35, 0xde, 0xa7),
+            White = Color.White, LineRed = Color.FromArgb(0xc8, 0x32, 0x32), Grey = Color.FromArgb(0xa0, 0xa0, 0xa0);
 
-        static readonly (double t, int r, int g, int b)[] Stops =
+        static readonly (double t, double r, double g, double b)[] Hues =
         {
-            (0, 20, 40, 200), (0.22, 0, 150, 255), (0.42, 0, 215, 90),
-            (0.62, 240, 235, 0), (0.8, 255, 130, 0), (1, 255, 25, 25),
+            (0, 255, 30, 40), (0.2, 245, 40, 170), (0.33, 210, 40, 250), (0.52, 130, 60, 250),
+            (0.65, 40, 60, 245), (0.83, 60, 160, 245), (1, 70, 235, 240),
         };
 
-        static readonly SolidBrush[] Front = new SolidBrush[Levels], Top = new SolidBrush[Levels], Side = new SolidBrush[Levels];
-        static readonly Dictionary<(float, bool), Font> Fonts = new Dictionary<(float, bool), Font>();
+        // per column, per height level: front / top / side brushes
+        static readonly SolidBrush[,] Front = new SolidBrush[Sim.NF, Levels], Top = new SolidBrush[Sim.NF, Levels], Side = new SolidBrush[Sim.NF, Levels];
+        static readonly Dictionary<(string, float, bool), Font> Fonts = new Dictionary<(string, float, bool), Font>();
         static readonly Dictionary<Color, SolidBrush> Brushes = new Dictionary<Color, SolidBrush>();
         static readonly StringFormat Fmt = (StringFormat)StringFormat.GenericTypographic.Clone();
         static readonly PointF[] Quad = new PointF[4];
 
+        // graph geometry: front edge (232..1400, 848); depth runs up-left to (118..1286, 570)
+        const float Gfx = 232, Gfy = 848, Gfw = 1168, MaxH = 92;
+        const float Ddx = -114f / Sim.NT, Ddy = -278f / Sim.NT;
+
+        static Bitmap graphBmp;
+        static int graphVersion = -1;
+        static float graphScale;
+
         static Renderer()
         {
-            for (int i = 0; i < Levels; i++)
+            for (int i = 0; i < Sim.NF; i++)
             {
-                var c = Heat(i / (double)(Levels - 1));
-                Front[i] = new SolidBrush(Shade(c, 0.85));
-                Top[i] = new SolidBrush(Shade(c, 1.25));
-                Side[i] = new SolidBrush(Shade(c, 0.55));
+                var b = Hue(i / (double)(Sim.NF - 1));
+                for (int l = 0; l < Levels; l++)
+                {
+                    double w = Math.Pow(l / (double)(Levels - 1), 3) * 0.75;
+                    double r = b.r + (255 - b.r) * w, g = b.g + (255 - b.g) * w, bl = b.b + (255 - b.b) * w;
+                    Front[i, l] = new SolidBrush(Mul(r, g, bl, 0.8));
+                    Top[i, l] = new SolidBrush(Mul(r, g, bl, 1.2));
+                    Side[i, l] = new SolidBrush(Mul(r, g, bl, 0.38));
+                }
             }
             Fmt.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap;
         }
 
-        static Color Heat(double t)
+        static (double r, double g, double b) Hue(double t)
         {
-            t = Math.Max(0, Math.Min(1, t));
-            for (int i = 1; i < Stops.Length; i++)
+            for (int i = 1; i < Hues.Length; i++)
             {
-                if (t <= Stops[i].t)
+                if (t <= Hues[i].t)
                 {
-                    var a = Stops[i - 1]; var b = Stops[i];
-                    double f = (t - a.t) / (b.t - a.t);
-                    return Color.FromArgb((int)Math.Round(a.r + (b.r - a.r) * f), (int)Math.Round(a.g + (b.g - a.g) * f), (int)Math.Round(a.b + (b.b - a.b) * f));
+                    var a = Hues[i - 1]; var c = Hues[i];
+                    double f = (t - a.t) / (c.t - a.t);
+                    return (a.r + (c.r - a.r) * f, a.g + (c.g - a.g) * f, a.b + (c.b - a.b) * f);
                 }
             }
-            var l = Stops[Stops.Length - 1];
-            return Color.FromArgb(l.r, l.g, l.b);
+            var l = Hues[Hues.Length - 1];
+            return (l.r, l.g, l.b);
         }
 
-        static Color Shade(Color c, double k) =>
-            Color.FromArgb(Math.Min(255, (int)Math.Round(c.R * k)), Math.Min(255, (int)Math.Round(c.G * k)), Math.Min(255, (int)Math.Round(c.B * k)));
+        static Color Mul(double r, double g, double b, double k) =>
+            Color.FromArgb(C255(r * k), C255(g * k), C255(b * k));
+        static int C255(double v) => (int)Math.Round(Math.Max(0, Math.Min(255, v)));
 
-        static Font F(float px, bool bold = false)
+        static Font F(float px, bool bold = false, string fam = BodyFont)
         {
-            if (!Fonts.TryGetValue((px, bold), out var f))
-                Fonts[(px, bold)] = f = new Font(FontName, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
+            if (!Fonts.TryGetValue((fam, px, bold), out var f))
+            {
+                try { f = new Font(fam, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel); }
+                catch { f = new Font(FontFamily.GenericSansSerif, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel); }
+                Fonts[(fam, px, bold)] = f;
+            }
             return f;
         }
 
@@ -75,304 +93,333 @@ namespace RetroSeti
             return b;
         }
 
-        static int Level(double v) => Math.Max(0, Math.Min(Levels - 1, (int)Math.Floor(v * Levels)));
-
-        // ---- text, positioned by baseline like canvas fillText ----
         enum Align { Left, Center, Right }
 
-        static void Text(Graphics g, string s, float x, float baseline, float px, Color c, bool bold = false, Align align = Align.Left)
+        // positioned by baseline, like canvas fillText
+        static float Text(Graphics g, string s, float x, float baseline, float px, Color c, Align align = Align.Left, bool bold = false, string fam = BodyFont)
         {
-            var f = F(px, bold);
+            var f = F(px, bold, fam);
             float ascent = px * f.FontFamily.GetCellAscent(f.Style) / f.FontFamily.GetEmHeight(f.Style);
-            float w = align == Align.Left ? 0 : g.MeasureString(s, f, PointF.Empty, Fmt).Width;
+            float w = g.MeasureString(s, f, PointF.Empty, Fmt).Width;
             float dx = align == Align.Center ? -w / 2 : align == Align.Right ? -w : 0;
             g.DrawString(s, f, B(c), x + dx, baseline - ascent, Fmt);
+            return w;
         }
 
-        static void Kv(Graphics g, float x, float y, string label, string value, float labelW = 150)
+        static GraphicsPath RoundRect(float x, float y, float w, float h, float r)
         {
-            Text(g, label, x, y, 16, CLabel);
-            Text(g, value, x + labelW, y, 16, CValue);
+            var p = new GraphicsPath();
+            float d = r * 2;
+            p.AddArc(x, y, d, d, 180, 90);
+            p.AddArc(x + w - d, y, d, d, 270, 90);
+            p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+            p.AddArc(x, y + h - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
         }
 
-        static void Panel(Graphics g, float x, float y, float w, float h, string title)
+        static void FillRound(Graphics g, Brush b, float x, float y, float w, float h, float r)
         {
-            g.FillRectangle(B(CPanel), x, y, w, h);
-            g.FillRectangle(B(CTitleBar), x, y, w, 30);
-            using (var p = new Pen(CBorder, 2))
-            {
-                g.DrawRectangle(p, x + 1, y + 1, w - 2, h - 2);
-                g.DrawLine(p, x, y + 30, x + w, y + 30);
-            }
-            Text(g, title, x + 12, y + 22, 17, CTitle, true);
+            using (var p = RoundRect(x, y, w, h, r)) g.FillPath(b, p);
         }
 
-        static string Pad(double n) => ((int)Math.Floor(n)).ToString("00");
+        static string Pad2(double n) => ((int)Math.Floor(n)).ToString("00");
+        static string Hms(double c) =>
+            $"{(int)(c / 3600)} hr {Pad2((c / 60) % 60)} min {(c % 60).ToString("00.0", CI)} sec";
 
-        static string FmtDuration(double sec)
-        {
-            int h = (int)(sec / 3600), m = (int)(sec / 60) % 60;
-            double s = sec % 60;
-            return $"{h} hr {m:00} min {s.ToString("00.0", CultureInfo.InvariantCulture)} sec";
-        }
+        public static bool ShowInfo;
+        public static string Url = "coral-coder.github.io/retro-seti";
 
         // ---- frame ----
         public static void Draw(Graphics g, int cw, int ch)
         {
             g.ResetTransform();
             g.Clear(Color.Black);
+            if (cw < 2 || ch < 2) return;
             float s = Math.Min(cw / VW, ch / VH);
-            g.TranslateTransform((cw - VW * s) / 2, (ch - VH * s) / 2);
+            float ox = (cw - VW * s) / 2, oy = (ch - VH * s) / 2;
+
+            // 3D graph from cache (redrawn only when the data or size changes)
+            if (graphVersion != Sim.GraphVersion || Math.Abs(graphScale - s) > 1e-4 || graphBmp == null)
+            {
+                RenderGraph(s);
+                graphVersion = Sim.GraphVersion; graphScale = s;
+            }
+            g.DrawImageUnscaled(graphBmp, (int)Math.Round(ox), (int)Math.Round(oy + GraphTop * s));
+
+            g.TranslateTransform(ox, oy);
             g.ScaleTransform(s, s);
-            g.TextRenderingHint = s < 0.4f ? TextRenderingHint.SingleBitPerPixelGridFit : TextRenderingHint.AntiAliasGridFit;
-            g.SmoothingMode = SmoothingMode.None;
+            g.TextRenderingHint = s < 0.35f ? TextRenderingHint.SingleBitPerPixelGridFit : TextRenderingHint.AntiAliasGridFit;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
 
             DrawHeader(g);
-            if (Settings.ShowPanels)
+            DrawFrame(g);
+            DrawAnalysis(g);
+            DrawDataInfo(g);
+            DrawUserInfo(g);
+            DrawGraphLabels(g);
+            DrawInfo(g);
+        }
+
+        static void DrawLogo(Graphics g)
+        {
+            using (var path = new GraphicsPath())
             {
-                DrawAnalysis(g, 20, 76, 600, 262);
-                DrawDataInfo(g, 636, 76, 468, 262);
-                DrawUserInfo(g, 1120, 76, 460, 262);
-                DrawGraph(g, 20, 354, 1064, 626);
-                DrawGaussian(g, 1100, 354, 480, 305);
-                DrawSpike(g, 1100, 675, 480, 305);
+                path.AddEllipse(23, 7, 62, 62);
+                using (var pg = new PathGradientBrush(path)
+                {
+                    CenterPoint = new PointF(44, 30),
+                    CenterColor = Color.FromArgb(0x9f, 0xf3, 0xff),
+                    SurroundColors = new[] { Color.FromArgb(0x14, 0x30, 0x6a) },
+                })
+                {
+                    pg.SetSigmaBellShape(0.6f);
+                    g.FillPath(pg, path);
+                }
             }
-            else DrawGraph(g, 20, 76, 1560, 904);
-            DrawOverlay(g);
+            using (var land = new SolidBrush(Color.FromArgb(190, 60, 200, 150)))
+            {
+                var st = g.Save();
+                g.TranslateTransform(46, 30); g.RotateTransform(-29);
+                g.FillEllipse(land, -12, -17, 24, 34);
+                g.Restore(st);
+                st = g.Save();
+                g.TranslateTransform(66, 50); g.RotateTransform(23);
+                g.FillEllipse(land, -8, -10, 16, 20);
+                g.Restore(st);
+            }
+            var pts = new List<PointF>();
+            for (int x = 70; x <= 250; x += 2)
+            {
+                double f = (x - 70) / 180.0;
+                pts.Add(new PointF(x, (float)(38 - Math.Sin(f * Math.PI * 4.2) * (16 - f * 6))));
+            }
+            var arr = pts.ToArray();
+            using (var b1 = new LinearGradientBrush(new PointF(69, 0), new PointF(251, 0), Color.FromArgb(255, 0x6a, 0x3f, 0xd0), Color.FromArgb(0, 110, 70, 220)))
+            using (var p1 = new Pen(b1, 10) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                g.DrawLines(p1, arr);
+            using (var b2 = new LinearGradientBrush(new PointF(69, 0), new PointF(251, 0), Color.FromArgb(255, 0xc9, 0xa8, 0xff), Color.FromArgb(0, 110, 70, 220)))
+            using (var p2 = new Pen(b2, 3) { LineJoin = LineJoin.Round })
+                g.DrawLines(p2, arr);
+        }
+
+        static void DrawDish(Graphics g, float x, float y)
+        {
+            var st = g.Save();
+            g.TranslateTransform(x, y); g.RotateTransform(-20);
+            g.FillPie(B(Green), -24, -11, 48, 22, 0, 180);
+            g.FillEllipse(B(Color.FromArgb(0x1d, 0x8f, 0x68)), -24, -5, 48, 10);
+            using (var p = new Pen(Green, 2)) g.DrawLine(p, 0, 0, 10, -16);
+            g.Restore(st);
         }
 
         static void DrawHeader(Graphics g)
         {
-            Text(g, "RETRO", 24, 50, 34, CTitle, true);
-            float w = g.MeasureString("RETRO ", F(34, true), PointF.Empty, Fmt).Width;
-            Text(g, "SETI", 24 + w, 50, 34, CRed, true);
-            float w2 = g.MeasureString("SETI", F(34, true), PointF.Empty, Fmt).Width;
-            Text(g, "Search for Extraterrestrial Intelligence  •  classic screensaver tribute", 24 + w + w2 + 14, 47, 15, CDim);
-            Text(g, DateTime.Now.ToString("ddd, MMM d, h:mm:ss tt"), VW - 24, 46, 16, CLabel, false, Align.Right);
+            DrawLogo(g);
+            Text(g, "The Search for", 198, 32, 27, White, Align.Left, false, TitleFont);
+            float w = Text(g, "Extraterrestrial Intelligence ", 285, 63, 27, White, Align.Left, false, TitleFont);
+            float w2 = Text(g, "at HOME", 285 + w + 6, 63, 27, Green, Align.Left, false, TitleFont);
+            DrawDish(g, 285 + w + w2 + 40, 40);
+            Text(g, "Press F1 for info", 995, 31, 19, White);
+            Text(g, "Version 3.08", 1435, 31, 19, White, Align.Right);
+            Text(g, Url, 1210, 58, 17, White, Align.Center);
         }
 
-        static void DrawAnalysis(Graphics g, float x, float y, float w, float h)
+        static void DrawFrame(Graphics g)
         {
-            Panel(g, x, y, w, h, "Data Analysis");
+            var pb = B(Purple);
+            FillRound(g, pb, 14, 87, 1471, 13, 6.5f);
+            FillRound(g, pb, 14, 437, 1471, 13, 6.5f);
+            g.FillRectangle(pb, 790, 92, 120, 352);
+            FillRound(g, pb, 860, 268, 625, 16, 8);
+            var bb = B(Color.Black);
+            FillRound(g, bb, -60, 100, 882, 337, 30);
+            FillRound(g, bb, 882, 100, 700, 168, 30);
+            FillRound(g, bb, 882, 284, 700, 153, 30);
+        }
+
+        static void DrawAnalysis(Graphics g)
+        {
             var wu = Sim.Wu;
-            var st = Sim.State(wu.P);
-            string act = Sim.Phase == Phase.Sending ? "Work unit complete — sending results"
-                : Sim.Phase == Phase.Receiving ? "Receiving new work unit" : st.Act;
-            act += new string('.', 1 + (int)(Environment.TickCount / 400 % 3));
-            Text(g, act, x + 16, y + 64, 20, CTitle, true);
-            bool an = Sim.Phase == Phase.Analyze;
-            Kv(g, x + 16, y + 98, "Chirp rate:", an ? st.Chirp.ToString("0.0000", CultureInfo.InvariantCulture) + " Hz/sec" : "—");
-            Kv(g, x + 16, y + 124, "FFT length:", an && st.Fft != 0 ? st.Fft.ToString() : "—");
-            Kv(g, x + 16, y + 150, "CPU time:", FmtDuration(wu.Cpu));
-            Kv(g, x + 16, y + 176, "Work unit:", wu.Name);
+            var st = Sim.State(Math.Min(wu.P, 0.99999));
+            Text(g, "Data Analysis", 361, 140, 22, White, Align.Center);
+            string act = st.Act; double sub = st.Sub;
+            if (Sim.Phase == Phase.Sending) { act = "Sending result to server"; sub = Math.Min(1, Sim.PhaseT / 5); }
+            if (Sim.Phase == Phase.Receiving) { act = "Getting new data unit"; sub = Math.Min(1, Sim.PhaseT / 5); }
+            Text(g, act, 24, 167, 21, White);
+            Text(g, $"{(int)(sub * 100)}%", 565, 167, 21, White, Align.Right);
+            g.FillRectangle(B(White), 582, 153, (float)Math.Max(2, 200 * sub), 11);
 
-            float bx = x + 16, by = y + h - 46, bw = w - 32 - 110, bh = 22;
-            g.FillRectangle(B(CPlot), bx, by, bw, bh);
-            if (wu.P > 0.001)
+            if (Sim.Phase == Phase.Analyze)
             {
-                using (var lg = new LinearGradientBrush(new PointF(bx - 1, 0), new PointF(bx + bw + 1, 0), Color.FromArgb(0x14, 0x28, 0xc8), Color.FromArgb(0, 0xdc, 0x5a)))
-                {
-                    lg.InterpolationColors = new ColorBlend
-                    {
-                        Colors = new[] { Color.FromArgb(0x14, 0x28, 0xc8), Color.FromArgb(0, 0xa0, 0xff), Color.FromArgb(0, 0xdc, 0x5a) },
-                        Positions = new[] { 0f, 0.5f, 1f },
-                    };
-                    g.FillRectangle(lg, bx, by, (float)(bw * wu.P), bh);
-                }
-            }
-            using (var p = new Pen(CBorder)) g.DrawRectangle(p, bx, by, bw - 1, bh - 1);
-            Text(g, (wu.P * 100).ToString("0.000", CultureInfo.InvariantCulture) + "%", x + w - 16, by + 18, 18, CValue, true, Align.Right);
-        }
-
-        static void DrawDataInfo(Graphics g, float x, float y, float w, float h)
-        {
-            Panel(g, x, y, w, h, "Data Info");
-            var wu = Sim.Wu;
-            var d = Sim.JdToDate(wu.Jd);
-            int rh = (int)wu.Ra, rm = (int)((wu.Ra - rh) * 60), rs = (int)(((wu.Ra - rh) * 60 - rm) * 60);
-            var ci = CultureInfo.InvariantCulture;
-            Kv(g, x + 16, y + 64, "From:", $"{rh} hr {rm:00} min {rs:00} sec RA", 130);
-            Kv(g, x + 16, y + 90, "", (wu.Dec >= 0 ? "+" : "") + wu.Dec.ToString("0.00", ci) + " Dec", 130);
-            Kv(g, x + 16, y + 120, "Recorded on:", wu.Jd.ToString("0.00000", ci), 130);
-            Kv(g, x + 16, y + 146, "", d.ToString("ddd, dd MMM yyyy HH:mm:ss", ci) + " UTC", 130);
-            Kv(g, x + 16, y + 176, "Source:", "Arecibo Radio Observatory", 130);
-            Kv(g, x + 16, y + 206, "Base freq.:", (wu.BaseHz / 1e9).ToString("0.000000000", ci) + " GHz", 130);
-            Kv(g, x + 16, y + 236, "Angle range:", wu.Angle.ToString("0.000", ci), 130);
-        }
-
-        static void DrawUserInfo(Graphics g, float x, float y, float w, float h)
-        {
-            Panel(g, x, y, w, h, "User Info");
-            string name = Settings.Name.Length > 28 ? Settings.Name.Substring(0, 28) : Settings.Name;
-            Kv(g, x + 16, y + 64, "Name:", name, 160);
-            Kv(g, x + 16, y + 94, "Work units:", Settings.Wus.ToString("N0"), 160);
-            int hrs = (int)(Settings.Cpu / 3600), mins = (int)(Settings.Cpu / 60) % 60;
-            Kv(g, x + 16, y + 124, "Total CPU time:", $"{hrs:N0} hr {mins:00} min", 160);
-            string avg = "—";
-            if (Settings.Wus > 0)
-            {
-                double a = Settings.Cpu / Settings.Wus;
-                avg = $"{(int)(a / 3600)} hr {(int)(a / 60) % 60:00} min {(int)(a % 60):00} sec";
-            }
-            Kv(g, x + 16, y + 154, "Avg per unit:", avg, 160);
-            Kv(g, x + 16, y + 184, "Listening since:", Settings.Since.ToShortDateString(), 160);
-            Text(g, "Simulated data — no real signals were harmed.", x + 16, y + h - 18, 13, CDim);
-        }
-
-        static void DrawGraph(Graphics g, float x, float y, float w, float h)
-        {
-            Panel(g, x, y, w, h, "Power vs. Frequency vs. Time");
-            const int NF = Sim.NF, NT = Sim.NT;
-            const float DX = 6.6f, DY = 5.6f;
-            float left = x + 70, baseY = y + h - 70;
-            float cw = (w - 110 - NT * DX) / NF;
-            float bw = cw * 0.72f;
-            float maxH = baseY - (y + 50) - NT * DY;
-            float fw = NF * cw;
-            float ddx = DX * 0.7f, ddy = DY * 0.7f;
-
-            // floor
-            using (var floor = new SolidBrush(Color.FromArgb(89, 20, 40, 110)))
-                g.FillPolygon(floor, new[] { new PointF(left, baseY), new PointF(left + fw, baseY), new PointF(left + fw + NT * DX, baseY - NT * DY), new PointF(left + NT * DX, baseY - NT * DY) });
-            using (var grid = new Pen(Color.FromArgb(115, 80, 110, 190)))
-            {
-                for (int i = 0; i <= NF; i += 6) g.DrawLine(grid, left + i * cw, baseY, left + i * cw + NT * DX, baseY - NT * DY);
-                for (int t = 0; t <= NT; t += 5) g.DrawLine(grid, left + t * DX, baseY - t * DY, left + fw + t * DX, baseY - t * DY);
-            }
-            using (var wall = new Pen(Color.FromArgb(56, 80, 110, 190)))
-            {
-                float bwx = left + NT * DX, bwy = baseY - NT * DY;
-                for (int k = 0; k <= 4; k++) g.DrawLine(wall, bwx, bwy - maxH * k / 4, bwx + fw, bwy - maxH * k / 4);
-                g.DrawLine(wall, bwx, bwy, bwx, bwy - maxH);
+                Text(g, "Doppler drift rate: " + st.Drift.ToString("0.0000", CI) + " Hz/sec", 24, 195, 21, White);
+                Text(g, "Resolution: " + st.Res.ToString("0.000", CI) + " Hz", 362, 195, 21, White);
+                Text(g, Sim.DetailText, 24, 223, 21, White);
+                DrawMiniGraph(g, 24, 238, 773, 96);
             }
 
-            // bars: back to front, left to right
-            float frac = (float)(Sim.RowAcc % 1);
-            var rows = Sim.Rows;
-            for (int t = rows.Count - 1; t >= 0; t--)
-            {
-                float tt = t + frac;
-                if (tt > NT - 0.5f) continue;
-                var row = rows[t];
-                float ox = left + tt * DX, oy = baseY - tt * DY;
-                for (int i = 0; i < NF; i++)
-                {
-                    double v = 1 - Math.Exp(-row[i] / 5.5);
-                    float hg = Math.Max(1.5f, (float)(v * maxH));
-                    int lv = Level(v);
-                    float bx = ox + i * cw, by = oy;
-                    Quad[0] = new PointF(bx + bw, by); Quad[1] = new PointF(bx + bw + ddx, by - ddy);
-                    Quad[2] = new PointF(bx + bw + ddx, by - hg - ddy); Quad[3] = new PointF(bx + bw, by - hg);
-                    g.FillPolygon(Side[lv], Quad);
-                    Quad[0] = new PointF(bx, by - hg); Quad[1] = new PointF(bx + bw, by - hg);
-                    Quad[2] = new PointF(bx + bw + ddx, by - hg - ddy); Quad[3] = new PointF(bx + ddx, by - hg - ddy);
-                    g.FillPolygon(Top[lv], Quad);
-                    g.FillRectangle(Front[lv], bx, by - hg, bw, hg);
-                }
-            }
-
-            // labels
-            Text(g, "Frequency →", left + fw / 2, baseY + 30, 15, CLabel, false, Align.Center);
-            var st = g.Save();
-            g.TranslateTransform(left + fw + NT * DX / 2 + 26, baseY - NT * DY / 2 + 10);
-            g.RotateTransform((float)(-Math.Atan2(DY, DX) * 180 / Math.PI));
-            Text(g, "← Time", 0, 0, 15, CLabel, false, Align.Center);
-            g.Restore(st);
-            st = g.Save();
-            g.TranslateTransform(left - 26, baseY - maxH / 2);
-            g.RotateTransform(-90);
-            Text(g, "Power →", 0, 0, 15, CLabel, false, Align.Center);
-            g.Restore(st);
-            var ci = CultureInfo.InvariantCulture;
-            Text(g, (Sim.Wu.BaseHz / 1e9).ToString("0.000000", ci) + " GHz", left, baseY + 52, 13, CDim);
-            Text(g, "+" + (NF * 9765.625 / 1000 / 4).ToString("0.0", ci) + " kHz", left + fw, baseY + 52, 13, CDim, false, Align.Right);
-
-            // colour legend
-            float lx = x + w - 40, ly = y + 50, lh = 140;
-            for (int k = 0; k < lh; k++) g.FillRectangle(B(Heat(1 - k / lh)), lx, ly + k, 14, 1);
-            using (var p = new Pen(CBorder)) g.DrawRectangle(p, lx - 0.5f, ly - 0.5f, 15, lh + 1);
-        }
-
-        static void PlotFrame(Graphics g, float x, float y, float w, float h)
-        {
-            g.FillRectangle(B(CPlot), x, y, w, h);
-            using (var p = new Pen(Color.FromArgb(64, 80, 110, 190)))
-                for (int k = 1; k < 4; k++) g.DrawLine(p, x, y + h * k / 4, x + w, y + h * k / 4);
-            using (var p = new Pen(CBorder)) g.DrawRectangle(p, x, y, w - 1, h - 1);
-        }
-
-        static void DrawGaussian(Graphics g, float x, float y, float w, float h)
-        {
-            Panel(g, x, y, w, h, "Best Gaussian");
-            var bg = Sim.Wu.BestGauss;
-            float px = x + 16, py = y + 44, pw = w - 32, ph = h - 130;
-            PlotFrame(g, px, py, pw, ph);
-            if (bg == null)
-            {
-                Text(g, "No gaussians found yet", px + pw / 2, py + ph / 2, 15, CDim, false, Align.Center);
-                return;
-            }
-            int n = bg.Samples.Length;
-            double maxV = bg.Amp + 1.5;
-            foreach (var sv in bg.Samples) maxV = Math.Max(maxV, sv);
-            maxV *= 1.08;
-            float sw = pw / n;
-            for (int i = 0; i < n; i++)
-            {
-                double v = bg.Samples[i] / maxV;
-                float bh = (float)(v * (ph - 4));
-                g.FillRectangle(Front[Level(Math.Min(0.999, v))], px + i * sw + 1, py + ph - bh - 2, Math.Max(1, sw - 2), bh);
-            }
-            var pts = new PointF[121];
-            for (int k = 0; k <= 120; k++)
-            {
-                double i = k / 120.0 * n, c = bg.Len / 2.0;
-                double v = (1.2 + bg.Amp * Math.Exp(-0.5 * Math.Pow((i - c) / bg.Sigma, 2))) / maxV;
-                pts[k] = new PointF((float)(px + i * sw), (float)(py + ph - 2 - v * (ph - 4)));
-            }
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var p = new Pen(CRed, 2.5f)) g.DrawLines(p, pts);
+            // 3D tube progress bar
+            float x = 24, y = 354, w = 746, h = 36, dx = 12, dy = -12;
+            float fw = (float)(w * wu.P);
+            var sm = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.None;
-            var ci = CultureInfo.InvariantCulture;
-            Kv(g, px, y + h - 54, "Power:", bg.Power.ToString("0.000", ci), 70);
-            Kv(g, px + pw / 2, y + h - 54, "Fit:", bg.Fit.ToString("0.000", ci), 50);
-            Kv(g, px, y + h - 26, "Score:", bg.Score.ToString("0.000", ci), 70);
-            Kv(g, px + pw / 2, y + h - 26, "Chirp:", bg.Chirp.ToString("0.000", ci), 60);
-        }
-
-        static void DrawSpike(Graphics g, float x, float y, float w, float h)
-        {
-            Panel(g, x, y, w, h, "Best Spike");
-            var s = Sim.Wu.BestSpike;
-            float px = x + 16, py = y + 44, pw = w - 32, ph = h - 130;
-            PlotFrame(g, px, py, pw, ph);
-            if (s == null) return;
-            double maxV = s.Power * 1.08;
-            float sw = pw / Sim.NF;
-            for (int i = 0; i < Sim.NF; i++)
+            if (fw > 0.5f)
             {
-                float bh = (float)(s.Spectrum[i] / maxV * (ph - 4));
-                g.FillRectangle(B(i == s.Bin ? CRed : Color.FromArgb(0, 0x90, 0xee)), px + i * sw + 1, py + ph - bh - 2, Math.Max(1, sw - 2), bh);
+                g.FillRectangle(B(Color.FromArgb(0xb0, 0x14, 0x1e)), x, y, fw, h);
+                Quad[0] = new PointF(x, y); Quad[1] = new PointF(x + dx, y + dy); Quad[2] = new PointF(x + fw + dx, y + dy); Quad[3] = new PointF(x + fw, y);
+                g.FillPolygon(B(Color.FromArgb(0xe0, 0x40, 0x48)), Quad);
+                Quad[0] = new PointF(x + fw, y); Quad[1] = new PointF(x + fw + dx, y + dy); Quad[2] = new PointF(x + fw + dx, y + dy + h); Quad[3] = new PointF(x + fw, y + h);
+                g.FillPolygon(B(Color.FromArgb(0x6e, 0x0a, 0x10)), Quad);
             }
-            var ci = CultureInfo.InvariantCulture;
-            Kv(g, px, y + h - 54, "Power:", s.Power.ToString("0.000", ci), 70);
-            Kv(g, px + pw / 2, y + h - 54, "FFT len:", s.Fft.ToString(), 80);
-            Kv(g, px, y + h - 26, "Freq:", (s.Freq >= 0 ? "+" : "") + s.Freq.ToString("0.00", ci) + " Hz", 70);
-            Kv(g, px + pw / 2, y + h - 26, "Chirp:", s.Chirp.ToString("0.000", ci), 80);
+            using (var p = new Pen(Grey, 2))
+            {
+                g.DrawRectangle(p, x, y, w, h);
+                g.DrawLines(p, new[] { new PointF(x, y), new PointF(x + dx, y + dy), new PointF(x + w + dx, y + dy), new PointF(x + w + dx, y + h + dy), new PointF(x + w, y + h) });
+                g.DrawLine(p, x + w, y, x + w + dx, y + dy);
+            }
+            g.SmoothingMode = sm;
+
+            Text(g, "Overall:  " + (wu.P * 100).ToString("0.000", CI) + "% done", 24, 418, 21, White);
+            Text(g, "CPU time: " + Hms(wu.Cpu), 747, 418, 21, White, Align.Right);
         }
 
-        static void DrawOverlay(Graphics g)
+        static void DrawMiniGraph(Graphics g, float x, float y, float w, float h)
         {
-            if (Sim.Phase == Phase.Analyze) return;
-            string msg = Sim.Phase == Phase.Sending ? "Sending results to the server..." : "Receiving a new work unit...";
-            float t = (float)Math.Min(1, Sim.PhaseT / 4);
-            float w = 640, h = 130, x = (VW - w) / 2, y = 470;
-            g.FillRectangle(B(Color.FromArgb(242, 0, 6, 30)), x, y, w, h);
-            using (var p = new Pen(CTitle, 2)) g.DrawRectangle(p, x, y, w, h);
-            Text(g, msg, VW / 2, y + 52, 24, CTitle, true, Align.Center);
-            g.FillRectangle(B(CPlot), x + 40, y + 76, w - 80, 20);
-            g.FillRectangle(B(Color.FromArgb(0, 0xdc, 0x5a)), x + 40, y + 76, (w - 80) * t, 20);
-            using (var p = new Pen(CBorder)) g.DrawRectangle(p, x + 40, y + 76, w - 81, 19);
+            var s = Sim.Series;
+            if (s.Length == 0) return;
+            double max = 1.5;
+            foreach (var v in s) max = Math.Max(max, v);
+            if (Sim.Curve != null) foreach (var v in Sim.Curve) max = Math.Max(max, v);
+            float sw = w / s.Length;
+            var pts = new PointF[s.Length * 2];
+            for (int i = 0; i < s.Length; i++)
+            {
+                float yy = (float)(y + h - s[i] / max * h);
+                pts[i * 2] = new PointF(x + i * sw, yy);
+                pts[i * 2 + 1] = new PointF(x + (i + 1) * sw, yy);
+            }
+            var sm = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.None;
+            using (var p = new Pen(LineRed, 2) { LineJoin = LineJoin.Miter }) g.DrawLines(p, pts);
+            g.SmoothingMode = sm;
+            if (Sim.Curve != null)
+            {
+                var c = new PointF[Sim.Curve.Length];
+                for (int i = 0; i < c.Length; i++) c[i] = new PointF(x + (i + 0.5f) * sw, (float)(y + h - Sim.Curve[i] / max * h));
+                using (var p = new Pen(White, 2)) g.DrawLines(p, c);
+            }
+        }
+
+        static void DrawDataInfo(Graphics g)
+        {
+            var wu = Sim.Wu;
+            Text(g, "Data Info", 1165, 140, 22, White, Align.Center);
+            int raH = (int)wu.Ra, raM = (int)((wu.Ra - raH) * 60), raS = (int)(((wu.Ra - raH) * 60 - raM) * 60);
+            double ad = Math.Abs(wu.Dec);
+            int dD = (int)ad, dM = (int)((ad - dD) * 60), dS = (int)(((ad - dD) * 60 - dM) * 60);
+            Text(g, $"From: {raH} hr {raM,2}' {raS,2}\" RA, {(wu.Dec < 0 ? "-" : "+")} {dD} deg {dM}' {dS}\" Dec", 906, 167, 21, White);
+            Text(g, "Recorded on: " + wu.Recorded.ToString("ddd MMM dd HH:mm:ss yyyy", CI) + " GMT", 906, 195, 21, White);
+            Text(g, "Source: Arecibo Radio Observatory", 906, 223, 21, White);
+            Text(g, "Base Frequency: " + (wu.BaseHz / 1e9).ToString("0.000000000", CI) + " GHz", 906, 251, 21, White);
+        }
+
+        static void DrawUserInfo(Graphics g)
+        {
+            Text(g, "User Info", 1163, 323, 22, White, Align.Center);
+            string name = Settings.Name.Length > 34 ? Settings.Name.Substring(0, 34) : Settings.Name;
+            Text(g, "Name: " + name, 906, 351, 21, White);
+            Text(g, "Data units completed: " + Settings.Wus, 906, 379, 21, White);
+            Text(g, "Total computer time: " + Hms(Settings.Cpu), 906, 407, 21, White);
+        }
+
+        // ---- the 3D power / frequency / time graph, rendered to a cached bitmap ----
+        static void RenderGraph(float scale)
+        {
+            int w = Math.Max(1, (int)Math.Ceiling(VW * scale)), h = Math.Max(1, (int)Math.Ceiling((VH - GraphTop) * scale));
+            if (graphBmp == null || graphBmp.Width != w || graphBmp.Height != h)
+            {
+                graphBmp?.Dispose();
+                graphBmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+            }
+            using (var g = Graphics.FromImage(graphBmp))
+            {
+                g.Clear(Color.Transparent);
+                g.ScaleTransform(scale, scale);
+                g.TranslateTransform(0, -GraphTop);
+                g.SmoothingMode = SmoothingMode.None;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                float cw = Gfw / Sim.NF;
+                using (var outline = new Pen(Color.Black, 1f / Math.Max(scale, 0.5f)))
+                {
+                    for (int t = Sim.NT - 1; t >= 0; t--)
+                    {
+                        var row = Sim.Rows[t];
+                        float ox = Gfx + t * Ddx, oy = Gfy + t * Ddy;
+                        for (int i = Sim.NF - 1; i >= 0; i--)
+                        {
+                            float hgt = (float)Math.Min(MaxH * 1.25, 4 + row[i] * 30);
+                            int lv = Math.Min(Levels - 1, (int)Math.Floor(Math.Max(0, hgt - 30) / (MaxH * 1.25 - 30) * Levels));
+                            float x = ox + i * cw, y = oy;
+                            Quad[0] = new PointF(x, y); Quad[1] = new PointF(x, y - hgt); Quad[2] = new PointF(x + Ddx, y - hgt + Ddy); Quad[3] = new PointF(x + Ddx, y + Ddy);
+                            g.FillPolygon(Side[i, lv], Quad);
+                            Quad[0] = new PointF(x, y - hgt); Quad[1] = new PointF(x + cw, y - hgt); Quad[2] = new PointF(x + cw + Ddx, y - hgt + Ddy); Quad[3] = new PointF(x + Ddx, y - hgt + Ddy);
+                            g.FillPolygon(Top[i, lv], Quad);
+                            g.DrawPolygon(outline, Quad);
+                            g.FillRectangle(Front[i, lv], x, y - hgt, cw, hgt);
+                            g.DrawRectangle(outline, x, y - hgt, cw, hgt);
+                        }
+                    }
+                }
+                float bx = Gfx + Sim.NT * Ddx, by = Gfy + Sim.NT * Ddy;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var p = new Pen(Color.FromArgb(0x8c, 0x8c, 0x8c), 1.5f))
+                {
+                    g.DrawLine(p, bx, by, Gfx, Gfy);
+                    g.DrawLines(p, new[] { new PointF(bx, by), new PointF(bx, by - MaxH), new PointF(bx + Gfw, by - MaxH), new PointF(Gfx + Gfw, Gfy - MaxH), new PointF(Gfx + Gfw, Gfy) });
+                    g.DrawLine(p, Gfx, Gfy, Gfx + Gfw, Gfy);
+                }
+            }
+        }
+
+        static void DrawGraphLabels(Graphics g)
+        {
+            float by = Gfy + Sim.NT * Ddy;
+            Text(g, Sim.WuTime.ToString("0.0", CI), 95, by + 14, 21, White, Align.Right);
+            Text(g, "Time (sec)", 52, 716, 21, White);
+            Text(g, "0", 202, 842, 21, White, Align.Right);
+            Text(g, "0.0", 245, 875, 21, White);
+            Text(g, "Frequency (Hz)", 842, 875, 21, White, Align.Center);
+            Text(g, (Sim.Bandwidth - 0.005).ToString("0.000", CI), 1407, 875, 21, White, Align.Right);
+            Text(g, "Power", 1449, 826, 21, White, Align.Center);
+            using (var p = new Pen(White, 2))
+            {
+                g.DrawLine(p, 1449, 800, 1449, 728);
+                g.DrawLines(p, new[] { new PointF(1440, 740), new PointF(1449, 728), new PointF(1458, 740) });
+            }
+        }
+
+        static void DrawInfo(Graphics g)
+        {
+            if (!ShowInfo) return;
+            float x = 300, y = 180, w = 900, h = 470;
+            FillRound(g, B(Color.FromArgb(235, 0, 0, 0)), x, y, w, h, 24);
+            using (var p = new Pen(Purple, 6)) using (var path = RoundRect(x, y, w, h, 24)) g.DrawPath(p, path);
+            var lines = new (string s, float px, bool title)[]
+            {
+                ("Retro SETI", 26, true),
+                ("A tribute to the classic SETI@home screensaver (1999–2005).", 19, false),
+                ("The data shown is simulated — nothing is downloaded or analysed.", 19, false),
+                ("Not affiliated with UC Berkeley or the SETI@home project.", 19, false),
+                ("", 10, false),
+                ("While running, the display is kept on and the PC won't sleep.", 19, false),
+                ("Run with /w for a window (F11 = fullscreen), /c for settings.", 19, false),
+                ("", 10, false),
+                ("The real SETI@home ran from May 1999; the classic client", 19, false),
+                ("retired on December 15, 2005 in favour of BOINC.", 19, false),
+            };
+            float yy = y + 60;
+            foreach (var l in lines) { Text(g, l.s, VW / 2, yy, l.px, l.title ? Green : White, Align.Center, l.title); yy += l.px + 16; }
+            Text(g, "press F1 to close", VW / 2, y + h - 26, 15, Grey, Align.Center);
         }
     }
 }
