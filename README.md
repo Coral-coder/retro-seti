@@ -19,8 +19,10 @@ collection). It was taken apart and read, never run, and none of its code or art
   (hue = 0.5 + 0.5·(ncols−col)/ncols, lightness = 0.2 + 0.6·height/maxHeight, saturation 1).
   Black fills the steps where the neighbouring column is taller; otherwise one black pixel
   caps each column.
-- **Viewpoint:** every new graph gets a random lean (left or right) and steepness:
-  dx = 50–119 px, dy = 200 − dx, one row per pixel of depth.
+- **Viewpoint:** in 3.08 every new graph gets a random lean (left or right) and steepness:
+  dx = 50–119 px, dy = 200 − dx, one row per pixel of depth. By default we also sway the lean
+  constantly from side to side while the graph keeps drawing, the way later versions
+  remembered it. *Per graph* in Settings gives the pure 3.08 behaviour.
 - **Graph data:** FFT bins are max-reduced onto the columns, or stretched when the FFT is
   shorter than the width, which gives the blocky look at low resolution. Each row is scaled
   linearly against the largest value seen so far in the graph, and rows appear back to front
@@ -32,8 +34,10 @@ collection). It was taken apart and read, never run, and none of its code or art
   Transform*, *Searching for Gaussians*, *Searching for Pulses / Triplets*, then
   *Sending result - connecting to server.*, *Sending data: nK*, *All data sent.*,
   *Getting data - connecting to server.*, *Receiving data: nK* and *All data received.*
-- **Small graph:** blank until something interesting turns up. During a search it shows
-  the candidate being examined, otherwise the best so far ("Best ...").
+- **Small graph:** blank until something interesting turns up. During a search it plays
+  rapidly through the data being examined: the Gaussian fit window slides along, and the
+  pulse search flicks through folded profiles as the period is stepped. Otherwise it shows
+  the best so far ("Best ...").
 - **Colours:** purple frame 153,102,255; graph line pure red; grey 127; progress-bar reds
   240/120/80.
 - **Sound:** the 3.08 client imports no audio APIs at all, so it was silent, and so is this.
@@ -59,9 +63,10 @@ A wide PNG with a transparent or black background looks best.
   browsers without it). The *Display awake* button toggles it; the browser releases the lock
   when the tab is hidden and the page re-takes it when you come back.
 - **F1**: info box · **S**: Settings · **F** or double-click: fullscreen · **N**: set your name · **L**: upload a logo
-- **Settings** window: data unit length, analysis step, graph grow/hold time, signal display time,
-  and the graph angle: *Classic* (a random lean for each graph, as 3.08 did), *Rock* (the lean
-  sweeps slowly left and right, graph by graph) or *Fixed*
+- **Settings** window: data unit length, analysis step, graph grow/hold time, signal graph
+  playthrough speed, rock period and amount, and the graph angle: *Rock* (default: the graph
+  sways side to side all the time while it keeps drawing), *Per graph* (a random lean for each
+  new graph, which is all the 3.08 binary does) or *Fixed*
 - URL options: `?name=Your+Name`, `?wu=15` (minutes per data unit)
 - Work units completed and total CPU time are remembered in `localStorage`.
 

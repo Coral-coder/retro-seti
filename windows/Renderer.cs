@@ -358,9 +358,10 @@ namespace RetroSeti
         const int Black32 = unchecked((int)0xff000000), Grey32 = unchecked((int)0xff7f7f7f);
         static readonly int[] pbuf = new int[Sim.PW * Sim.PH];
         static readonly Bitmap panel = new Bitmap(Sim.PW, Sim.PH, PixelFormat.Format32bppArgb);
-        static int drawnGen = -1, drawnRows;
+        static int drawnGen = -1, drawnRows, drawnLean = int.MinValue;
 
         static int Rgb32(int r, int g, int b) => unchecked((int)0xff000000) | (r << 16) | (g << 8) | b;
+        public static int ClassicColour(double h, double l) { var (r, g, b) = HlsToRgb(h, l, 1); return Rgb32(r, g, b); }
         static void Put(int x, int y, int c) { if (x >= 0 && x < Sim.PW && y >= 0 && y < Sim.PH) pbuf[y * Sim.PW + x] = c; }
 
         static void PLine(int x0, int y0, int x1, int y1, int c)
@@ -380,7 +381,7 @@ namespace RetroSeti
         static Corners GraphCorners()
         {
             var G = Sim.G;
-            int fx = G.Flag != 0 ? Sim.Marg : Sim.Marg + G.Dx, bx = G.Flag != 0 ? Sim.Marg + G.Dx : Sim.Marg;
+            int fx = Sim.Marg + (G.Span - G.Lean) / 2, bx = fx + G.Lean;
             return new Corners
             {
                 FL = new Point(fx - 2, Sim.Base + 1), FR = new Point(fx + G.NCols, Sim.Base + 1),
@@ -395,7 +396,7 @@ namespace RetroSeti
             Point Up(Point p) => new Point(p.X, p.Y - mh);
             L(k.FL, k.FR); L(k.FL, k.BL); L(k.BL, k.BR); L(k.FR, k.BR);
             L(k.BL, Up(k.BL)); L(k.BR, Up(k.BR)); L(Up(k.BL), Up(k.BR));
-            if (Sim.G.Flag != 0) { L(k.FL, Up(k.FL)); L(Up(k.FL), Up(k.BL)); }
+            if (Sim.G.Lean > 0) { L(k.FL, Up(k.FL)); L(Up(k.FL), Up(k.BL)); }
             else { L(k.FR, Up(k.FR)); L(Up(k.FR), Up(k.BR)); }
         }
 
@@ -403,16 +404,16 @@ namespace RetroSeti
         {
             var G = Sim.G;
             var h = G.Rows[r];
-            int n = G.N, ncols = G.NCols;
-            int xs = G.Flag != 0 ? G.Dx * (n - r - 1) / n : G.Dx * r / n;
+            int n = G.N, ncols = G.NCols, mh1 = G.MaxH + 1;
+            bool flag = G.Lean > 0;
+            int x0 = Sim.Marg + (G.Span - G.Lean) / 2 + G.Lean * (n - r - 1) / n;
             int ys = G.Dy * (n - r - 1) / n;
             for (int c = 0; c < ncols; c++)
             {
-                int hc = h[c], x = Sim.Marg + xs + c;
-                var (R, Gc, Bl) = HlsToRgb(0.5 + 0.5 * (ncols - c) / ncols, 0.2 + 0.6 * hc / G.MaxH, 1);
-                int col = Rgb32(R, Gc, Bl);
+                int hc = h[c], x = x0 + c;
+                int col = G.Lut[c * mh1 + hc];
                 for (int y = ys; y < ys + hc; y++) Put(x, Sim.Base - y, col);
-                int nb = G.Flag != 0 ? c + 1 : c - 1;
+                int nb = flag ? c + 1 : c - 1;
                 if (nb >= 0 && nb < ncols && h[nb] > hc) { for (int y = ys + hc; y < ys + h[nb]; y++) Put(x, Sim.Base - y, Black32); }
                 else Put(x, Sim.Base - (ys + hc), Black32);
             }
@@ -421,10 +422,11 @@ namespace RetroSeti
         static void UpdatePanel()
         {
             bool changed = false;
-            if (drawnGen != Sim.G.Gen)
+            if (Settings.GraphAngle == "rock") Sim.G.Lean = Sim.RockLean();
+            if (drawnGen != Sim.G.Gen || drawnLean != Sim.G.Lean)    // new graph, or the sway moved a pixel
             {
                 for (int i = 0; i < pbuf.Length; i++) pbuf[i] = Black32;
-                DrawBox(); drawnGen = Sim.G.Gen; drawnRows = 0; changed = true;
+                DrawBox(); drawnGen = Sim.G.Gen; drawnLean = Sim.G.Lean; drawnRows = 0; changed = true;
             }
             while (drawnRows < Sim.G.Emitted) { DrawRow(drawnRows++); changed = true; }
             if (!changed) return;
@@ -449,7 +451,7 @@ namespace RetroSeti
             var p = ToV(k.FL.X + 6, below); Text(g, "0.0", p.X, p.Y, 21, White);
             p = ToV((k.FL.X + k.FR.X) / 2f + 13, below); Text(g, "Frequency (Hz)", p.X, p.Y, 21, White, Align.Center);
             p = ToV(k.FR.X + 3, below); Text(g, (Sim.Bandwidth - 0.005).ToString("0.000", CI), p.X, p.Y, 21, White, Align.Right);
-            bool right = Sim.G.Flag != 0;
+            bool right = Sim.G.Lean > 0;
             int side = right ? 1 : -1;
             Point back = right ? k.BR : k.BL, front = right ? k.FR : k.FL;
             var al = right ? Align.Left : Align.Right;

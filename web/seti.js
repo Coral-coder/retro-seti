@@ -19,12 +19,14 @@
     stepSeconds: 20,    // one (drift rate, FFT length) analysis pass
     growSeconds: 6,     // 3D graph: time to grow in row by row
     holdSeconds: 4,     // 3D graph: time to hold before the next array
-    signalSeconds: 8,   // how long each best signal is shown before rotating
-    graphAngle: 'classic', // 'classic' = random lean per graph (as 3.08 did), 'rock' = sweeps side to side, 'fixed'
+    signalFps: 15,      // how fast the signal graph plays through the data during a search
+    graphAngle: 'rock', // 'rock' = constant slow side-to-side sway, 'classic' = random lean per graph (as 3.08 did), 'fixed'
+    rockSeconds: 40,    // one full left-right-left sway
+    rockAmount: 90,     // how far the depth leans each way (original pixels; 3.08 used 50-119)
   };
   const LIMITS = {
     wuMinutes: [1, 600, 1], stepSeconds: [5, 60, 1], growSeconds: [1, 20, 0.5], holdSeconds: [0, 20, 0.5],
-    signalSeconds: [2, 30, 1],
+    signalFps: [2, 30, 1], rockSeconds: [10, 120, 1], rockAmount: [20, 119, 1],
   };
   const FFTS = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
   const BANDWIDTH = 9765.625;           // Hz per data unit
@@ -123,23 +125,36 @@
   // bar height budget = height - dy. FFT bins are max-reduced (or stretched) onto the columns,
   // and each row is scaled linearly against the largest value seen so far in this graph.
   const PW = 750, PH = 206, WG = PW - 110, HG = PH - 20, BASE = PH - 20, MARG = 60;
-  const cg = { gen: 0, flag: 0, dx: 57, dy: 143, n: 143, ncols: 583, maxH: 43, fft: 1024,
-               rows: [], maxSoFar: 0, start: -1e9, emitted: 0, leanStep: 0, lastSpec: -1 };
+  // lean = signed sideways depth shift (negative: rows lean up-left, positive: up-right);
+  // span = horizontal room reserved for it. In 'rock' mode lean sways every frame.
+  const cg = { gen: 0, lean: -57, span: 57, dy: 143, n: 143, ncols: 583, maxH: 43, fft: 1024,
+               rows: [], maxSoFar: 0, start: -1e9, emitted: 0, lastSpec: -1, lut: null };
 
   function gumbelMax(q) { return q <= 1 ? expo() : Math.log(q) - Math.log(-Math.log(1 - Math.random() * 0.999999)); }
 
+  function rockLean() { return Math.round(cg.span * Math.sin(2 * Math.PI * clock / cfg.rockSeconds)); }
+
   function newGraph(fft) {
-    let flag, dx;
-    if (cfg.graphAngle === 'fixed') { flag = 0; dx = 57; }
-    else if (cfg.graphAngle === 'rock') {
-      const s = Math.sin(cg.leanStep++ * 0.45);
-      flag = s < 0 ? 1 : 0; dx = 50 + Math.round(69 * Math.abs(s));
-    } else { flag = Math.random() < 0.5 ? 0 : 1; dx = 50 + Math.floor(Math.random() * 70); }
-    const dy = 200 - dx;
+    let lean, span, dy;
+    // rock: the sway never stops; each new graph still gets the original's random steepness
+    if (cfg.graphAngle === 'rock') { span = cfg.rockAmount; dy = 200 - (50 + Math.floor(Math.random() * 70)); lean = 0; }
+    else {
+      const dx = cfg.graphAngle === 'fixed' ? 57 : 50 + Math.floor(Math.random() * 70);
+      const right = cfg.graphAngle === 'fixed' ? false : Math.random() < 0.5;
+      span = dx; dy = 200 - dx; lean = right ? dx : -dx;
+    }
+    const ncols = WG - span, maxH = HG - dy;
+    // colour for every (column, height): HLS(0.5 + 0.5*(ncols-col)/ncols, 0.2 + 0.6*h/maxH, 1)
+    const lut = new Uint32Array(ncols * (maxH + 1));
+    for (let c = 0; c < ncols; c++) for (let h = 0; h <= maxH; h++) {
+      const [R, G, B] = hlsToRgb(0.5 + 0.5 * (ncols - c) / ncols, 0.2 + 0.6 * h / maxH, 1);
+      lut[c * (maxH + 1) + h] = (0xff000000 | (B << 16) | (G << 8) | R) >>> 0;
+    }
     Object.assign(cg, {
-      gen: cg.gen + 1, flag, dx, dy, n: Math.max(dx, dy), ncols: WG - dx, maxH: HG - dy, fft,
+      gen: cg.gen + 1, lean, span, dy, n: Math.max(span, dy), ncols, maxH, fft, lut,
       rows: [], maxSoFar: 0, start: clock, emitted: 0, lastSpec: -1,
     });
+    if (cfg.graphAngle === 'rock') cg.lean = rockLean();
   }
 
   function emitRow() {
@@ -191,10 +206,12 @@
     const chisqr = rand(0.6, 9);
     return { type: 'gauss', peak, mean, sigma, ind, pot, chisqr, score: peak / Math.sqrt(chisqr) };
   }
-  function makePulse() {
-    const period = rand(0.002, 1.2), peak = rand(0.5, 2.2);
-    const pot = Array.from({ length: PULSE_POT_LEN }, () => Math.min(255, 70 + expo() * 30));
-    pot[Math.floor(rand(0, PULSE_POT_LEN))] = 255;
+  // one frame of the pulse search: the profile folded at the period being tried
+  function makePulse(period) {
+    const peak = rand(0.3, 1.4) + (Math.random() < 0.08 ? rand(0.8, 1.6) : 0);
+    const pot = Array.from({ length: PULSE_POT_LEN }, () => Math.min(255, 70 + expo() * 28));
+    const at = Math.floor(rand(0, PULSE_POT_LEN)), wid = 1 + Math.floor(rand(0, 4));
+    for (let i = at; i < Math.min(PULSE_POT_LEN, at + wid); i++) pot[i] = Math.min(255, 110 + peak * 100);
     return { type: 'pulse', peak, period, pot, score: peak * rand(0.3, 0.6) };
   }
   function makeTriplet() {
@@ -205,26 +222,34 @@
     for (const t of ticks) pot[t] = 255;
     return { type: 'triplet', peak, period, pot, ticks, score: peak };
   }
-  const signal = { shown: null, best: false, current: null, until: 0 };
+  // During a search the small graph plays rapidly through the data being examined (cfg.signalFps
+  // frames a second): the Gaussian fit window slides along the data, and the pulse search flicks
+  // through folded profiles as the period is stepped. Otherwise it shows the best so far.
+  const signal = { shown: null, best: false, next: 0, scan: 0, period: 0.002, tripletUntil: 0 };
   function keepBest(s) { const cur = wu.best[s.type]; if (!cur || s.score > cur.score) wu.best[s.type] = s; }
   function chooseSignal(st) {
-    if (phase === 'analyze' && st.act === 'Searching for Gaussians') {
-      if (!signal.current || signal.current.type !== 'gauss' || clock > signal.until) {
-        signal.current = makeGauss(); keepBest(signal.current); signal.until = clock + cfg.signalSeconds / 4;
-      }
-      signal.shown = signal.current; signal.best = false; return;
+    const searching = phase === 'analyze' && (st.act === 'Searching for Gaussians' || st.act === 'Searching for Pulses / Triplets');
+    if (!searching) {
+      const b = wu.best.gauss || wu.best.pulse || wu.best.triplet;
+      signal.shown = b; signal.best = true; signal.scan = 0; signal.period = 0.002; return;
     }
-    if (phase === 'analyze' && st.act === 'Searching for Pulses / Triplets') {
-      if (!signal.current || signal.current.type === 'gauss' || clock > signal.until) {
-        if (Math.random() < 0.15) { const t = makeTriplet(); keepBest(t); signal.current = t; }
-        else { signal.current = makePulse(); keepBest(signal.current); }
-        signal.until = clock + cfg.signalSeconds / 4;
-      }
-      signal.shown = signal.current; signal.best = signal.current.type === 'triplet'; return;
+    if (clock < signal.next) return;
+    signal.next = clock + 1 / cfg.signalFps;
+    if (st.act === 'Searching for Gaussians') {
+      // slide the fit window along the 64-point data
+      signal.scan = (signal.scan + 1.5) % (GAUSS_POT_LEN + 16);
+      const g = makeGauss();
+      g.ind = signal.scan - 8;
+      g.pot = g.pot.map((_, i) => { const d = (i - g.ind) / g.sigma; return Math.max(0, g.mean + g.peak * Math.exp(-d * d * 0.693) + (expo() - 1) * 0.6); });
+      keepBest(g); signal.shown = g; signal.best = false; return;
     }
-    signal.current = null;
-    const b = wu.best.gauss || wu.best.pulse || wu.best.triplet;
-    signal.shown = b; signal.best = true;
+    // pulses: step the trial period and fold again; now and then a triplet turns up
+    if (clock < signal.tripletUntil) return;
+    if (Math.random() < 0.01) {
+      const t = makeTriplet(); keepBest(t); signal.shown = t; signal.best = true; signal.tripletUntil = clock + 1.2; return;
+    }
+    signal.period = signal.period >= 1.2 ? 0.002 : signal.period * 1.07;
+    const p = makePulse(signal.period); keepBest(p); signal.shown = p; signal.best = false;
   }
   function signalText(s, best) {
     if (!s) return '';
@@ -504,8 +529,8 @@
   }
 
   function graphCorners() {
-    const { flag, dx, dy, ncols, maxH } = cg;
-    const fx = flag ? MARG : MARG + dx, bx = flag ? MARG + dx : MARG;
+    const { lean, span, dy, ncols, maxH } = cg;
+    const fx = MARG + Math.trunc((span - lean) / 2), bx = fx + lean;
     return {
       FL: [fx - 2, BASE + 1], FR: [fx + ncols, BASE + 1],
       BL: [bx - 2, BASE - dy], BR: [bx + ncols, BASE - dy], maxH,
@@ -518,19 +543,19 @@
     const up = (p) => [p[0], p[1] - maxH];
     L(FL, FR); L(FL, BL); L(BL, BR); L(FR, BR);                 // floor
     L(BL, up(BL)); L(BR, up(BR)); L(up(BL), up(BR));            // back wall
-    if (cg.flag) { L(FL, up(FL)); L(up(FL), up(BL)); }          // open side posts + top edge
+    if (cg.lean > 0) { L(FL, up(FL)); L(up(FL), up(BL)); }      // open side posts + top edge
     else { L(FR, up(FR)); L(up(FR), up(BR)); }
   }
 
   function drawRow(r) {
-    const { flag, dx, dy, n, ncols, maxH } = cg;
+    const { lean, span, dy, n, ncols, maxH, lut } = cg;
+    const flag = lean > 0;
     const h = cg.rows[r];
-    const xs = Math.trunc(flag ? dx * (n - r - 1) / n : dx * r / n);
+    const x0 = MARG + Math.trunc((span - lean) / 2) + Math.trunc(lean * (n - r - 1) / n);
     const ys = Math.trunc(dy * (n - r - 1) / n);
     for (let c = 0; c < ncols; c++) {
-      const hc = h[c], x = MARG + xs + c;
-      const [R, G, B] = hlsToRgb(0.5 + 0.5 * (ncols - c) / ncols, 0.2 + 0.6 * hc / maxH, 1);
-      const col = rgb32(R, G, B);
+      const hc = h[c], x = x0 + c;
+      const col = lut[c * (maxH + 1) + hc];
       for (let y = ys; y < ys + hc; y++) put(x, BASE - y, col);
       const nb = flag ? c + 1 : c - 1;
       if (nb >= 0 && nb < ncols && h[nb] > hc) { for (let y = ys + hc; y < ys + h[nb]; y++) put(x, BASE - y, BLACK32); }
@@ -538,10 +563,12 @@
     }
   }
 
+  let drawnLean = NaN;
   function updatePanel() {
     let changed = false;
-    if (drawnGen !== cg.gen) {
-      pbuf.fill(BLACK32); drawBox(); drawnGen = cg.gen; drawnRows = 0; changed = true;
+    if (cfg.graphAngle === 'rock') cg.lean = rockLean();
+    if (drawnGen !== cg.gen || drawnLean !== cg.lean) {       // new graph, or the sway moved a pixel
+      pbuf.fill(BLACK32); drawBox(); drawnGen = cg.gen; drawnLean = cg.lean; drawnRows = 0; changed = true;
     }
     while (drawnRows < cg.emitted) { drawRow(drawnRows++); changed = true; }
     if (changed) pctx.putImageData(pimg, 0, 0);
@@ -562,12 +589,12 @@
     let [x, y] = toV(FL[0] + 6, below); text('0.0', x, y, 21);
     [x, y] = toV((FL[0] + FR[0]) / 2 + 13, below); text('Frequency (Hz)', x, y, 21, WHITE, 'center');
     [x, y] = toV(FR[0] + 3, below); text(fmt(BANDWIDTH - 0.005, 5, 3), x, y, 21, WHITE, 'right');
-    const side = cg.flag ? 1 : -1;                          // time labels on the leaning side
-    const back = cg.flag ? BR : BL, front = cg.flag ? FR : FL, align = cg.flag ? 'left' : 'right';
+    const side = cg.lean > 0 ? 1 : -1;                          // time labels on the leaning side
+    const back = cg.lean > 0 ? BR : BL, front = cg.lean > 0 ? FR : FL, align = cg.lean > 0 ? 'left' : 'right';
     [x, y] = toV(back[0] + side * 12, back[1] + 7); text(fmt(WU_TIME, 5, 1).trim(), x, y, 21, WHITE, align);
     [x, y] = toV((back[0] + front[0]) / 2 + side * 13, (back[1] + front[1]) / 2 + 3); text('Time (sec)', x, y, 21, WHITE, align);
     [x, y] = toV(front[0] + side * 15, front[1] - 3); text('0', x, y, 21, WHITE, align);
-    const px = cg.flag ? 23 : PW - 23;                      // "Power" arrow on the other side
+    const px = cg.lean > 0 ? 23 : PW - 23;                      // "Power" arrow on the other side
     [x, y] = toV(px, 177); text('Power', x, y, 21, WHITE, 'center');
     const [ax, ay0] = toV(px, 163), [, ay1] = toV(px, 127);
     ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
@@ -701,7 +728,9 @@
     stepSeconds: ['Analysis step (per FFT pass)', 's'],
     growSeconds: ['Graph grow time', 's'],
     holdSeconds: ['Graph hold time', 's'],
-    signalSeconds: ['Signal display time', 's'],
+    signalFps: ['Signal graph playthrough speed', '/s'],
+    rockSeconds: ['Rock period (left-right-left)', 's'],
+    rockAmount: ['Rock amount', 'px'],
   };
   const dlg = document.getElementById('settings');
   const rowsEl = document.getElementById('settingsRows');
@@ -724,8 +753,8 @@
   const angleRow = document.createElement('div'); angleRow.className = 'row';
   angleRow.innerHTML = `<label for="set-graphAngle">Graph angle</label>
     <select id="set-graphAngle" style="grid-column:1/3;background:#000a28;color:#fff;border:1px solid #3d5aa0;padding:5px;border-radius:3px;font:inherit">
-      <option value="classic">Classic: random lean for each new graph (as 3.08 did)</option>
-      <option value="rock">Rock: lean sweeps slowly left and right, graph by graph</option>
+      <option value="rock">Rock: constant slow sway from side to side</option>
+      <option value="classic">Per graph: random lean for each new graph (as the 3.08 binary does)</option>
       <option value="fixed">Fixed: always the v3.07 screenshot angle</option>
     </select>`;
   rowsEl.appendChild(angleRow);
@@ -742,7 +771,7 @@
     if (key === 'wuMinutes' || key === 'stepSeconds') {
       wu.slots = Math.max(6, Math.round(cfg.wuMinutes * 60 / cfg.stepSeconds));
     }
-    if (key === 'graphAngle') cg.start = -1e9;              // show the new angle straight away
+    if (key === 'graphAngle' || key === 'rockAmount') cg.start = -1e9;   // start a graph with the new view
   }
   function openSettings() { syncSettingsForm(); if (!dlg.open) dlg.showModal(); }
   document.getElementById('settingsBtn').addEventListener('click', openSettings);

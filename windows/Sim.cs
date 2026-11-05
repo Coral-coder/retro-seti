@@ -35,7 +35,9 @@ namespace RetroSeti
     /// <summary>State of the current 3D graph, as the 3.08 client built it.</summary>
     sealed class ClassicGraph
     {
-        public int Gen, Flag, Dx = 57, Dy = 143, N = 143, NCols = 583, MaxH = 43, Fft = 1024, Emitted, LastSpec = -1;
+        // Lean = signed sideways depth shift (negative: rows lean up-left); Span = room reserved for it.
+        public int Gen, Lean = -57, Span = 57, Dy = 143, N = 143, NCols = 583, MaxH = 43, Fft = 1024, Emitted, LastSpec = -1;
+        public int[] Lut;
         public double MaxSoFar, Start = -1e9;
         public readonly List<byte[]> Rows = new List<byte[]>();
     }
@@ -56,12 +58,10 @@ namespace RetroSeti
         public static Phase Phase = Phase.Analyze;
         public static double PhaseT, Clock;
         public static readonly ClassicGraph G = new ClassicGraph();
-        static int leanStep;
 
         public static Signal Shown;
         public static bool ShownBest;
-        static Signal current;
-        static double currentUntil, saveAcc;
+        static double nextSignal, scan, period = 0.002, tripletUntil, saveAcc;
 
         public static double Rand(double a, double b) => a + Rng.NextDouble() * (b - a);
         static double Expo() => -Math.Log(1 - Rng.NextDouble());
@@ -111,21 +111,33 @@ namespace RetroSeti
         static double GumbelMax(double q) =>
             q <= 1 ? Expo() : Math.Log(q) - Math.Log(-Math.Log(1 - Rng.NextDouble() * 0.999999));
 
+        public static int RockLean() =>
+            (int)Math.Round(G.Span * Math.Sin(2 * Math.PI * Clock / Settings.RockSeconds));
+
         public static void NewGraph(int fft)
         {
-            int flag, dx;
-            switch (Settings.GraphAngle)
+            int lean, span, dy;
+            if (Settings.GraphAngle == "rock")
             {
-                case "fixed": flag = 0; dx = 57; break;
-                case "rock":
-                    double s = Math.Sin(leanStep++ * 0.45);
-                    flag = s < 0 ? 1 : 0; dx = 50 + (int)Math.Round(69 * Math.Abs(s)); break;
-                default: flag = Rng.Next(2); dx = 50 + Rng.Next(70); break;
+                // the sway never stops; each new graph still gets the original's random steepness
+                span = (int)Settings.RockAmount; dy = 200 - (50 + Rng.Next(70)); lean = 0;
             }
-            int dy = 200 - dx;
-            G.Gen++; G.Flag = flag; G.Dx = dx; G.Dy = dy; G.N = Math.Max(dx, dy);
-            G.NCols = WG - dx; G.MaxH = HG - dy; G.Fft = fft;
+            else
+            {
+                bool fixedView = Settings.GraphAngle == "fixed";
+                int dx = fixedView ? 57 : 50 + Rng.Next(70);
+                bool right = !fixedView && Rng.Next(2) == 1;
+                span = dx; dy = 200 - dx; lean = right ? dx : -dx;
+            }
+            int ncols = WG - span, maxH = HG - dy;
+            var lut = new int[ncols * (maxH + 1)];
+            for (int c = 0; c < ncols; c++)
+                for (int h = 0; h <= maxH; h++)
+                    lut[c * (maxH + 1) + h] = Renderer.ClassicColour(0.5 + 0.5 * (ncols - c) / ncols, 0.2 + 0.6 * h / maxH);
+            G.Gen++; G.Lean = lean; G.Span = span; G.Dy = dy; G.N = Math.Max(span, dy);
+            G.NCols = ncols; G.MaxH = maxH; G.Fft = fft; G.Lut = lut;
             G.Rows.Clear(); G.MaxSoFar = 0; G.Start = Clock; G.Emitted = 0; G.LastSpec = -1;
+            if (Settings.GraphAngle == "rock") G.Lean = RockLean();
         }
 
         static void EmitRow()
@@ -183,13 +195,15 @@ namespace RetroSeti
             return new Signal { Type = "gauss", Peak = peak, Mean = mean, Sigma = sigma, Ind = ind, Pot = pot, ChiSqr = chisqr, Score = peak / Math.Sqrt(chisqr) };
         }
 
-        static Signal MakePulse()
+        // one frame of the pulse search: the profile folded at the period being tried
+        static Signal MakePulse(double trialPeriod)
         {
-            double peak = Rand(0.5, 2.2);
+            double peak = Rand(0.3, 1.4) + (Rng.NextDouble() < 0.08 ? Rand(0.8, 1.6) : 0);
             var pot = new double[PulsePotLen];
-            for (int i = 0; i < pot.Length; i++) pot[i] = Math.Min(255, 70 + Expo() * 30);
-            pot[Rng.Next(PulsePotLen)] = 255;
-            return new Signal { Type = "pulse", Peak = peak, Period = Rand(0.002, 1.2), Pot = pot, Score = peak * Rand(0.3, 0.6) };
+            for (int i = 0; i < pot.Length; i++) pot[i] = Math.Min(255, 70 + Expo() * 28);
+            int at = Rng.Next(PulsePotLen), wid = 1 + Rng.Next(4);
+            for (int i = at; i < Math.Min(PulsePotLen, at + wid); i++) pot[i] = Math.Min(255, 110 + peak * 100);
+            return new Signal { Type = "pulse", Peak = peak, Period = trialPeriod, Pot = pot, Score = peak * Rand(0.3, 0.6) };
         }
 
         static Signal MakeTriplet()
@@ -208,31 +222,42 @@ namespace RetroSeti
             if (!Wu.Best.TryGetValue(s.Type, out var cur) || s.Score > cur.Score) Wu.Best[s.Type] = s;
         }
 
-        // blank until something turns up; the candidate being examined during a search,
-        // otherwise the best found so far
+        // During a search the small graph plays rapidly through the data being examined
+        // (SignalFps frames a second): the Gaussian fit window slides along the data and the
+        // pulse search flicks through folded profiles as the period is stepped. Otherwise it
+        // shows the best found so far (blank until something turns up).
         static void ChooseSignal(SlotState st)
         {
-            double life = Settings.SignalSeconds / 4;
-            if (Phase == Phase.Analyze && st.Act == "Searching for Gaussians")
+            bool searching = Phase == Phase.Analyze &&
+                (st.Act == "Searching for Gaussians" || st.Act == "Searching for Pulses / Triplets");
+            if (!searching)
             {
-                if (current == null || current.Type != "gauss" || Clock > currentUntil)
-                { current = MakeGauss(); KeepBest(current); currentUntil = Clock + life; }
-                Shown = current; ShownBest = false; return;
+                Wu.Best.TryGetValue("gauss", out var bg);
+                Wu.Best.TryGetValue("pulse", out var bp);
+                Wu.Best.TryGetValue("triplet", out var bt);
+                Shown = bg ?? bp ?? bt; ShownBest = true; scan = 0; period = 0.002; return;
             }
-            if (Phase == Phase.Analyze && st.Act == "Searching for Pulses / Triplets")
+            if (Clock < nextSignal) return;
+            nextSignal = Clock + 1 / Settings.SignalFps;
+            if (st.Act == "Searching for Gaussians")
             {
-                if (current == null || current.Type == "gauss" || Clock > currentUntil)
+                scan = (scan + 1.5) % (GaussPotLen + 16);
+                var g = MakeGauss();
+                g.Ind = scan - 8;
+                for (int i = 0; i < g.Pot.Length; i++)
                 {
-                    current = Rng.NextDouble() < 0.15 ? MakeTriplet() : MakePulse();
-                    KeepBest(current); currentUntil = Clock + life;
+                    double d = (i - g.Ind) / g.Sigma;
+                    g.Pot[i] = Math.Max(0, g.Mean + g.Peak * Math.Exp(-d * d * 0.693) + (Expo() - 1) * 0.6);
                 }
-                Shown = current; ShownBest = current.Type == "triplet"; return;
+                KeepBest(g); Shown = g; ShownBest = false; return;
             }
-            current = null;
-            Wu.Best.TryGetValue("gauss", out var g);
-            Wu.Best.TryGetValue("pulse", out var p);
-            Wu.Best.TryGetValue("triplet", out var t);
-            Shown = g ?? p ?? t; ShownBest = true;
+            if (Clock < tripletUntil) return;
+            if (Rng.NextDouble() < 0.01)
+            {
+                var t = MakeTriplet(); KeepBest(t); Shown = t; ShownBest = true; tripletUntil = Clock + 1.2; return;
+            }
+            period = period >= 1.2 ? 0.002 : period * 1.07;
+            var p = MakePulse(period); KeepBest(p); Shown = p; ShownBest = false;
         }
 
         static string F(double v, int w, int p) => v.ToString("F" + p, CI).PadLeft(w);

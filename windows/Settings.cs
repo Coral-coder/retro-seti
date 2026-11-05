@@ -21,16 +21,18 @@ namespace RetroSeti
         public static double StepSeconds = 20;    // one (drift rate, FFT length) analysis pass
         public static double GrowSeconds = 6;     // 3D graph grows in row by row
         public static double HoldSeconds = 4;     // 3D graph holds before the next array
-        public static double SignalSeconds = 8;   // each best signal is shown this long
+        public static double SignalFps = 15;      // signal graph playthrough speed during a search
         /// <summary>"classic" = random lean per graph (as 3.08 did), "rock" = sweeps side to side, "fixed".</summary>
-        public static string GraphAngle = "classic";
-        public static readonly string[] GraphAngles = { "classic", "rock", "fixed" };
+        public static string GraphAngle = "rock";
+        public static readonly string[] GraphAngles = { "rock", "classic", "fixed" };
         public static readonly string[] GraphAngleLabels =
         {
-            "Classic: random lean for each new graph (as 3.08 did)",
-            "Rock: lean sweeps slowly left and right, graph by graph",
+            "Rock: constant slow sway from side to side",
+            "Per graph: random lean for each new graph (as the 3.08 binary does)",
             "Fixed: always the v3.07 screenshot angle",
         };
+        public static double RockSeconds = 40;    // one full left-right-left sway
+        public static double RockAmount = 90;     // how far the depth leans each way (original pixels)
 
         public sealed class Speed
         {
@@ -46,7 +48,9 @@ namespace RetroSeti
             new Speed { Key = "StepSeconds", Label = "Analysis step (per FFT pass)", Unit = "s", Min = 5, Max = 60, Step = 1, Default = 20, Get = () => StepSeconds, Set = v => StepSeconds = v },
             new Speed { Key = "GrowSeconds", Label = "Graph grow time", Unit = "s", Min = 1, Max = 20, Step = 0.5, Default = 6, Get = () => GrowSeconds, Set = v => GrowSeconds = v },
             new Speed { Key = "HoldSeconds", Label = "Graph hold time", Unit = "s", Min = 0, Max = 20, Step = 0.5, Default = 4, Get = () => HoldSeconds, Set = v => HoldSeconds = v },
-            new Speed { Key = "SignalSeconds", Label = "Signal display time", Unit = "s", Min = 2, Max = 30, Step = 1, Default = 8, Get = () => SignalSeconds, Set = v => SignalSeconds = v },
+            new Speed { Key = "SignalFps", Label = "Signal graph playthrough speed", Unit = "/s", Min = 2, Max = 30, Step = 1, Default = 15, Get = () => SignalFps, Set = v => SignalFps = v },
+            new Speed { Key = "RockSeconds", Label = "Rock period (left-right-left)", Unit = "s", Min = 10, Max = 120, Step = 1, Default = 40, Get = () => RockSeconds, Set = v => RockSeconds = v },
+            new Speed { Key = "RockAmount", Label = "Rock amount", Unit = "px", Min = 20, Max = 119, Step = 1, Default = 90, Get = () => RockAmount, Set = v => RockAmount = v },
         };
 
         /// <summary>User-chosen title logo; the title becomes "S.E.T.I. @ {logo}" when it exists.</summary>
