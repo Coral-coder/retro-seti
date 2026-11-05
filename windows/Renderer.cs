@@ -237,7 +237,8 @@ namespace RetroSeti
                 float tw = g.MeasureString(label, f, PointF.Empty, Fmt).Width;
                 float k = Math.Min(560f / logo.Width, 70f / logo.Height);
                 float lw = logo.Width * k, lh = logo.Height * k;
-                float x = 560 - (tw + lw) / 2;
+                DrawLogo(g);                  // the classic globe + signal wave stays on the left
+                float x = 214;
                 Text(g, label, x, 62, 46, White, Align.Left, false, TitleFont);
                 var im = g.InterpolationMode;
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;

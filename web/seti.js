@@ -299,7 +299,9 @@
     const maxW = 560, maxH = 70;
     const k = Math.min(maxW / logoImg.naturalWidth, maxH / logoImg.naturalHeight);
     const lw = logoImg.naturalWidth * k, lh = logoImg.naturalHeight * k;
-    let x = 560 - (tw + lw) / 2;
+    drawLogo();                       // the classic globe + signal wave stays on the left
+    let x = 214;
+    ctx.letterSpacing = '6px'; font(46, true, TITLE_FONT);
     ctx.fillStyle = WHITE; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     ctx.fillText(label, x, 62);
     ctx.letterSpacing = '0px';
