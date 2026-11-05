@@ -24,9 +24,10 @@
     rockSeconds: 40,    // one full left-right-left sway
     rockAmount: 90,     // how far the depth leans each way (original pixels; 3.08 used 50-119)
   };
+  DEFAULTS.rotateMinutes = 3;   // switch display every N minutes (0 = never)
   const LIMITS = {
     wuMinutes: [1, 600, 1], stepSeconds: [5, 60, 1], growSeconds: [1, 20, 0.5], holdSeconds: [0, 20, 0.5],
-    signalFps: [2, 30, 1], rockSeconds: [10, 120, 1], rockAmount: [20, 119, 1],
+    rotateMinutes: [0, 60, 1], signalFps: [2, 30, 1], rockSeconds: [10, 120, 1], rockAmount: [20, 119, 1],
   };
   const FFTS = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
   const BANDWIDTH = 9765.625;           // Hz per data unit
@@ -85,7 +86,8 @@
   function newWorkUnit() {
     return {
       ra: rand(0, 24), dec: rand(0, 38),
-      recorded: new Date(Date.UTC(1999, 0, 1) + rand(0, 7 * 365.25 * 86400000)),
+      // recorded during the last month Arecibo worked: November 2020 (it collapsed on 1 December 2020)
+      recorded: new Date(Date.UTC(2020, 10, 1) + rand(0, 30 * 86400000)),
       base: 1418750000 + Math.floor(rand(0, 256)) * BANDWIDTH,
       p: 0, cpu: 0,
       slots: Math.max(6, Math.round(cfg.wuMinutes * 60 / cfg.stepSeconds)),
@@ -627,11 +629,11 @@
     ctx.strokeStyle = PURPLE; ctx.lineWidth = 6; roundRect(x, y, w, h, 24); ctx.stroke();
     const lines = [
       ['Retro SETI', 26, true],
-      ['A tribute to the classic SETI@home screensaver (1999–2005).', 19],
-      ['The data shown is simulated — nothing is downloaded or analysed.', 19],
+      ['A tribute to the classic SETI@home screensaver (1999–2005), plus more observatory displays.', 19],
+      ['All data shown is simulated — nothing is downloaded or analysed.', 19],
       ['Not affiliated with UC Berkeley or the SETI@home project.', 19],
       ['', 10],
-      ['F1 info    F fullscreen    S settings    N name    L logo', 19],
+      ['F1 info   F fullscreen   S settings   \u2190 \u2192 / 1\u20139 switch display   N name   L logo', 19],
       ['Your display is kept awake while this page is visible.', 19],
       ['', 10],
       ['The real SETI@home ran from May 1999; the classic client', 19],
@@ -642,9 +644,34 @@
     text('press any key to close', VW / 2, y + h - 26, 15, GREY, 'center');
   }
 
-  // ---------- frame ----------
+  // ---------- displays & rotation ----------
+  // Each display: { id, title, tick(dt) (optional, called only while shown), draw() (virtual 1500x885) }
   const view = { s: 1, ox: 0, oy: 0 };
-  function render() {
+  const displays = [];
+  function drawSeti() {
+    drawHeader();
+    drawFrame();
+    drawAnalysis();
+    drawDataInfo();
+    drawUserInfo();
+    drawGraph();
+  }
+  displays.push({ id: 'seti', title: 'SETI@home classic', draw: drawSeti });
+
+  let enabled = store.get('displays', null);           // ids in rotation; null = all
+  const inRotation = () => displays.filter((d) => !enabled || enabled.includes(d.id));
+  let current = 0, shownFor = 0, fade = 0, pending = -1;
+  const forced = params.get('display');
+  function show(idx) { if (idx !== current) { pending = ((idx % displays.length) + displays.length) % displays.length; } }
+  function step(dir) {
+    const list = inRotation();
+    if (!list.length) return;
+    const pos = list.indexOf(displays[current]);
+    const next = list[((pos < 0 ? 0 : pos + dir) % list.length + list.length) % list.length];
+    show(displays.indexOf(next));
+  }
+
+  function render(dt) {
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
     if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
@@ -654,12 +681,15 @@
     view.s = s; view.ox = (cw - VW * s) / 2; view.oy = (ch - VH * s) / 2;
     ctx.setTransform(s, 0, 0, s, view.ox, view.oy);
 
-    drawHeader();
-    drawFrame();
-    drawAnalysis();
-    drawDataInfo();
-    drawUserInfo();
-    drawGraph();
+    // cross-fade through black when switching
+    if (pending >= 0) { fade += dt / 0.7; if (fade >= 1) { current = pending; pending = -1; shownFor = 0; const d = displays[current]; if (d.onShow) d.onShow(); } }
+    else if (fade > 0) fade = Math.max(0, fade - dt / 0.7);
+
+    ctx.save();
+    displays[current].draw();
+    ctx.restore();
+    ctx.setTransform(s, 0, 0, s, view.ox, view.oy);
+    if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${Math.min(1, fade)})`; ctx.fillRect(-view.ox / s, -view.oy / s, cw / s, ch / s); }
     drawInfo();
   }
 
@@ -668,12 +698,46 @@
   function frame(now) {
     const dt = Math.min(0.25, (now - last) / 1000);
     last = now;
-    tick(dt);
-    render();
+    tick(dt);                                             // the SETI work unit keeps going in the background
+    const d = displays[current];
+    if (d.tick) d.tick(dt);
+    shownFor += dt;
+    if (!forced && cfg.rotateMinutes > 0 && shownFor > cfg.rotateMinutes * 60 && pending < 0 && inRotation().length > 1) step(1);
+    render(dt);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
   setInterval(() => { if (document.hidden) { const now = performance.now(); tick(Math.min(5, (now - last) / 1000)); last = now; } }, 1000);
+
+  // other display scripts plug in here
+  window.RetroSETI = {
+    register(d) {
+      displays.push(d);
+      if (forced && d.id === forced) { current = displays.length - 1; if (d.onShow) d.onShow(); }
+    },
+    ctx, VW, VH, view, store, params,
+    text, font, roundRect, clamp, rand, expo, pad, hlsToRgb,
+    colors: { PURPLE, GREEN, WHITE, GREY, RED: LINE_RED }, FONT, TITLE_FONT,
+    // a console-style panel: black, rounded, purple border, centred title
+    panel(x, y, w, h, title) {
+      ctx.fillStyle = '#000'; roundRect(x, y, w, h, 22); ctx.fill();
+      ctx.strokeStyle = PURPLE; ctx.lineWidth = 6; roundRect(x, y, w, h, 22); ctx.stroke();
+      if (title) text(title, x + w / 2, y + 34, 22, WHITE, 'center');
+    },
+    // a header in the classic style: big wide title with a green accent word, and a right-hand block
+    header(title, accent, rightLines) {
+      ctx.letterSpacing = '2px';
+      font(40, true, TITLE_FONT); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = WHITE; ctx.fillText(title, 24, 56);
+      const w = ctx.measureText(title + ' ').width;
+      ctx.fillStyle = GREEN; ctx.fillText(accent, 24 + w, 56);
+      ctx.letterSpacing = '0px';
+      (rightLines || []).forEach((l, i) => text(l, VW - 24, 30 + i * 26, 19, WHITE, 'right'));
+      ctx.fillStyle = PURPLE; roundRect(14, 76, VW - 28, 12, 6); ctx.fill();
+    },
+    simulatedTag() { text('simulated data', VW - 18, VH - 10, 13, '#555', 'right'); },
+    utc(t) { const d = new Date(t); return `${DAYS[d.getUTCDay()]} ${MONS[d.getUTCMonth()]} ${pad(d.getUTCDate())} ${d.getUTCFullYear()}  ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} UTC`; },
+  };
 
   // ---------- keep the display awake ----------
   const wakeBtn = document.getElementById('wakeBtn');
@@ -741,7 +805,8 @@
 
   // ---- Settings window (animation speeds) ----
   const SETTING_LABELS = {
-    wuMinutes: ['Data unit length', 'min'],
+    rotateMinutes: ['Switch display every (0 = never)', 'min'],
+    wuMinutes: ['SETI: data unit length', 'min'],
     stepSeconds: ['Analysis step (per FFT pass)', 's'],
     growSeconds: ['Graph grow time', 's'],
     holdSeconds: ['Graph hold time', 's'],
@@ -790,7 +855,20 @@
     }
     if (key === 'graphAngle' || key === 'rockAmount') cg.start = -1e9;   // start a graph with the new view
   }
-  function openSettings() { syncSettingsForm(); if (!dlg.open) dlg.showModal(); }
+  // which displays are in the rotation (built when the dialog opens: displays register after load)
+  const rotRow = document.createElement('div'); rotRow.className = 'row';
+  rowsEl.insertBefore(rotRow, rowsEl.children[1] || null);
+  function buildRotationChecks() {
+    rotRow.innerHTML = '<label style="grid-column:1/3">Displays in rotation</label>' + displays.map((d, i) =>
+      `<label style="grid-column:1/3;flex-direction:row;display:flex;gap:8px;align-items:center;color:#fff">
+         <input type="checkbox" data-id="${d.id}" ${!enabled || enabled.includes(d.id) ? 'checked' : ''}> ${i + 1}. ${d.title}</label>`).join('');
+    rotRow.querySelectorAll('input').forEach((cb) => cb.addEventListener('change', () => {
+      const ids = [...rotRow.querySelectorAll('input:checked')].map((c) => c.dataset.id);
+      enabled = ids.length === displays.length ? null : ids;
+      store.set('displays', enabled);
+    }));
+  }
+  function openSettings() { buildRotationChecks(); syncSettingsForm(); if (!dlg.open) dlg.showModal(); }
   document.getElementById('settingsBtn').addEventListener('click', openSettings);
   document.getElementById('settingsReset').addEventListener('click', () => {
     Object.assign(cfg, DEFAULTS); syncSettingsForm(); onSettingsChanged('wuMinutes');
@@ -830,6 +908,9 @@
     if (e.key === 'F1') { e.preventDefault(); showInfo = !showInfo; return; }
     if (showInfo) { showInfo = false; return; }
     const k = e.key.toLowerCase();
+    if (e.key === 'ArrowRight' || e.key === 'PageDown') { step(1); return; }
+    if (e.key === 'ArrowLeft' || e.key === 'PageUp') { step(-1); return; }
+    if (/^[1-9]$/.test(e.key) && +e.key <= displays.length) { show(+e.key - 1); return; }
     if (k === 'f') toggleFullscreen();
     else if (k === 'n') askName();
     else if (k === 'l') pickLogo();

@@ -75,6 +75,28 @@ Deployment: `.github/workflows/pages.yml` runs on every push to `main`, builds t
 screensaver, and publishes `web/` (with the `.scr` at `download/RetroSETI.scr`) to Pages.
 Pages must be set to **Source: GitHub Actions**.
 
+## Displays and rotation
+
+The screensaver page cycles through several observatory displays, all with simulated data
+(Settings → *Switch display every N min* and *Displays in rotation*; ← / → or 1–5 switch
+by hand; `?display=pulsar` pins one):
+
+1. **SETI@home classic**: the original look. Work units are "recorded" in November 2020,
+   the last month before Arecibo collapsed.
+2. **Hydrogen Line Survey**: a fast-forwarded drift scan of the Milky Way's 21 cm line
+   (same physical model as the Observatory page): spectrum, waterfall, sky map and the
+   longitude–velocity diagram.
+3. **Pulsar Search**: a dynamic spectrum with dispersed pulses, the dispersion-measure
+   search, folding (profile and phase-vs-time) and a candidate list.
+4. **Black Hole Imaging**: an Earth-sized 230 GHz array at the real EHT sites. Earth's
+   rotation fills the (u,v) plane and the image of M87*, Sgr A*, 3C 279 or Centaurus A is
+   rebuilt from those samples.
+5. **Deep Sky Scanner**: an all-sky map in galactic coordinates. The antenna slews to
+   famous pulsars, quasars, black holes, masers and an FRB source (real positions, current
+   time), locks on, and shows that kind of signal.
+
+All displays except SETI use the current date and time.
+
 ## Hydrogen Line Observatory (`web/hline.html`)
 
 Turns a backyard dish + RTL-SDR into a hydrogen-line (1420.40575 MHz) radio telescope, or
