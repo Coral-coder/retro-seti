@@ -75,6 +75,31 @@ Deployment: `.github/workflows/pages.yml` runs on every push to `main`, builds t
 screensaver, and publishes `web/` (with the `.scr` at `download/RetroSETI.scr`) to Pages.
 Pages must be set to **Source: GitHub Actions**.
 
+## Hydrogen Line Observatory (`web/hline.html`)
+
+Turns a backyard dish + RTL-SDR into a hydrogen-line (1420.40575 MHz) radio telescope, or
+simulates one first.
+
+- **Demo sky:** a physical model of the Milky Way's hydrogen (a flaring disk, four spiral
+  arms and a flat rotation curve), seen through your dish's beam with realistic noise and
+  interference. Fast-forward it to watch a whole survey build up.
+- **Your recordings:** load raw `rtl_sdr` captures (`.cu8`, 8-bit I/Q), e.g.
+  `rtl_sdr -f 1420405751 -s 2400000 -g 40 -T capture.cu8`. They are processed in the
+  browser at about 4× real time and only the averaged spectra are kept (in IndexedDB,
+  about 1 MB per day).
+- **Processing:** FFT power spectra → Doppler velocity → spike (interference) removal →
+  bandpass flattening → correction for Earth's orbit and the Sun's motion (LSR) → sky
+  position (RA/Dec and galactic l/b) from the time, your location and the dish pointing.
+- **Products:**
+  - spectrum and 24-hour waterfall
+  - sky map
+  - longitude–velocity diagram
+  - rotation curve (tangent-point method, with the "no dark matter" curve for comparison)
+  - face-on map of the Milky Way from kinematic distances
+- **Survey planner:** the elevation and direction to point the dish each day.
+
+A live USB connection to the RTL-SDR (WebUSB) is not included yet.
+
 ## Windows screensaver
 
 `windows/` is a native C# / GDI+ port of the same visuals that compiles to a single

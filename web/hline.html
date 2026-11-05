@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+<title>Hydrogen Line Observatory</title>
+<meta name="description" content="Map the Milky Way's hydrogen with a backyard dish and an RTL-SDR, or try it first with a simulated sky.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cpath d='M2 26 L8 24 L12 14 L16 4 L20 14 L24 24 L30 26' fill='none' stroke='%239966ff' stroke-width='3'/%3E%3C/svg%3E">
+<style>
+  :root { --purple: #9966ff; --text: #fff; --dim: #a8a8c8; --panel: #000; --input: #0b0b1e; --green: #35dea7; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #000; color: var(--text); font: 15px/1.45 Arial, "Liberation Sans", Helvetica, sans-serif; }
+  a { color: var(--green); }
+  header { padding: 14px 16px 10px; border-bottom: 6px solid var(--purple); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+  header h1 { margin: 0; font: 900 26px "Arial Black", Arial, sans-serif; letter-spacing: 1px; }
+  header h1 span { color: var(--green); }
+  header .sub { color: var(--dim); }
+  header nav { margin-left: auto; }
+  main { padding: 12px 16px 40px; max-width: 1500px; margin: 0 auto; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; margin-bottom: 10px; }
+  .bar label { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--dim); }
+  input, select, button { font: inherit; color: var(--text); background: var(--input); border: 1px solid #4a3c8a; border-radius: 4px; padding: 5px 8px; }
+  input[type=number] { width: 7.5em; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--purple); }
+  button.primary { border-color: var(--purple); background: #1c1240; }
+  .status { border: 4px solid var(--purple); border-radius: 18px; padding: 10px 16px; margin: 6px 0 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 4px 18px; }
+  .status div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status b { color: var(--dim); font-weight: normal; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 14px; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+  .panel { border: 4px solid var(--purple); border-radius: 18px; padding: 10px 12px 12px; min-width: 0; }
+  .panel h2 { margin: 0 0 2px; font-size: 18px; font-weight: normal; text-align: center; }
+  .panel p { margin: 0 0 8px; color: var(--dim); font-size: 13px; text-align: center; }
+  .panel canvas { width: 100%; height: auto; display: block; background: #000; }
+  .plan { border: 4px solid var(--purple); border-radius: 18px; padding: 12px 18px; margin-top: 14px; }
+  .plan h2 { margin: 0 0 6px; font-size: 18px; font-weight: normal; }
+  .plan ol { margin: 6px 0 0; padding-left: 22px; }
+  .plan li { margin: 3px 0; }
+  .note { color: var(--dim); font-size: 13px; }
+  .hidden { display: none !important; }
+  .tag { color: var(--green); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hydrogen Line <span>Observatory</span></h1>
+  <div class="sub">1420.40575 MHz &mdash; map the Milky Way with a backyard dish</div>
+  <nav><a href="./">&larr; back to the screensaver</a></nav>
+</header>
+<main>
+  <div class="bar">
+    <label>Data source
+      <select id="source">
+        <option value="demo">Demo sky (simulated Milky Way)</option>
+        <option value="file">Recording from your dish (rtl_sdr file)</option>
+      </select>
+    </label>
+    <label class="demo-only">Demo speed
+      <select id="speed">
+        <option value="60">1 minute per second</option>
+        <option value="600">10 minutes per second</option>
+        <option value="3600" selected>1 hour per second</option>
+        <option value="14400">4 hours per second</option>
+      </select>
+    </label>
+    <label class="demo-only" title="Tilt the dish to a new declination each simulated day, as a mapping survey would">Survey
+      <select id="survey">
+        <option value="on" selected>Re-point every day</option>
+        <option value="off">Stay at the current pointing</option>
+      </select>
+    </label>
+    <button id="run" class="primary demo-only" type="button">Start</button>
+    <label>Latitude &deg;<input id="lat" type="number" step="0.01" value="40.00"></label>
+    <label>Longitude &deg; (E+)<input id="lon" type="number" step="0.01" value="-105.00"></label>
+    <button id="geo" type="button">Use my location</button>
+    <label>Dish &oslash; (m)<input id="dish" type="number" step="0.1" min="0.3" value="1.2"></label>
+    <label title="90 = straight up">Elevation &deg;<input id="el" type="number" step="1" min="5" max="90" value="90"></label>
+    <label title="180 = south, 0 = north">Azimuth &deg;<input id="az" type="number" step="1" min="0" max="359" value="180"></label>
+  </div>
+
+  <div class="bar file-only hidden">
+    <label>Recording (.cu8 / .bin from rtl_sdr)<input id="file" type="file"></label>
+    <label>Sample rate (Hz)<input id="fs" type="number" value="2400000" step="1000"></label>
+    <label>Centre frequency (Hz)<input id="fc" type="number" value="1420405751" step="1"></label>
+    <label>Recording started (local time)<input id="t0" type="datetime-local"></label>
+    <label>Integrate (s)<input id="tint" type="number" value="60" min="5" step="5"></label>
+    <button id="process" class="primary" type="button">Process recording</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="grid">
+    <section class="panel"><h2>Spectrum</h2><p>Hydrogen glow at each speed along the line of sight. Bumps are clouds of gas moving towards (&minus;) or away (+) from us.</p><canvas id="cSpec" width="880" height="420"></canvas></section>
+    <section class="panel"><h2>Waterfall</h2><p>The last 24 hours, newest at the top. The Milky Way drifting overhead shows up as bright bands.</p><canvas id="cFall" width="880" height="420"></canvas></section>
+    <section class="panel"><h2>Sky map</h2><p>Total hydrogen seen in each part of the sky you have observed. The bright band is the plane of the Milky Way.</p><canvas id="cSky" width="880" height="420"></canvas></section>
+    <section class="panel"><h2>Longitude&ndash;velocity diagram</h2><p>Along the galactic plane: speed of the gas at each galactic longitude. Spiral arms appear as ridges.</p><canvas id="cLV" width="880" height="420"></canvas></section>
+    <section class="panel"><h2>Rotation curve</h2><p>How fast the galaxy spins at each distance from its centre. A flat curve is the classic evidence for dark matter.</p><canvas id="cRot" width="880" height="420"></canvas></section>
+    <section class="panel"><h2>Face-on map of the Milky Way</h2><p>Hydrogen placed at its distance using the rotation, seen from above. You are at the star; the centre is the cross.</p><canvas id="cMap" width="880" height="880"></canvas></section>
+  </div>
+
+  <section class="plan">
+    <h2>What you would be doing</h2>
+    <div id="plan"></div>
+    <p class="note">Everything here runs in your browser. Recordings and results never leave your computer; real observations are kept in this browser's storage so the maps keep building from day to day.</p>
+  </section>
+</main>
+<script src="hline.js"></script>
+</body>
+</html>
