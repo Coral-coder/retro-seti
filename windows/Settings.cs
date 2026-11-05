@@ -22,8 +22,15 @@ namespace RetroSeti
         public static double GrowSeconds = 6;     // 3D graph grows in row by row
         public static double HoldSeconds = 4;     // 3D graph holds before the next array
         public static double SignalSeconds = 8;   // each best signal is shown this long
-        public static double RockSeconds = 40;    // one full left-right-left rock of the 3D graph
-        public static double RockDegrees = 6;     // how far it rocks each way (0 = still)
+        /// <summary>"classic" = random lean per graph (as 3.08 did), "rock" = sweeps side to side, "fixed".</summary>
+        public static string GraphAngle = "classic";
+        public static readonly string[] GraphAngles = { "classic", "rock", "fixed" };
+        public static readonly string[] GraphAngleLabels =
+        {
+            "Classic: random lean for each new graph (as 3.08 did)",
+            "Rock: lean sweeps slowly left and right, graph by graph",
+            "Fixed: always the v3.07 screenshot angle",
+        };
 
         public sealed class Speed
         {
@@ -40,8 +47,6 @@ namespace RetroSeti
             new Speed { Key = "GrowSeconds", Label = "Graph grow time", Unit = "s", Min = 1, Max = 20, Step = 0.5, Default = 6, Get = () => GrowSeconds, Set = v => GrowSeconds = v },
             new Speed { Key = "HoldSeconds", Label = "Graph hold time", Unit = "s", Min = 0, Max = 20, Step = 0.5, Default = 4, Get = () => HoldSeconds, Set = v => HoldSeconds = v },
             new Speed { Key = "SignalSeconds", Label = "Signal display time", Unit = "s", Min = 2, Max = 30, Step = 1, Default = 8, Get = () => SignalSeconds, Set = v => SignalSeconds = v },
-            new Speed { Key = "RockSeconds", Label = "Graph rock period (left-right-left)", Unit = "s", Min = 10, Max = 120, Step = 1, Default = 40, Get = () => RockSeconds, Set = v => RockSeconds = v },
-            new Speed { Key = "RockDegrees", Label = "Graph rock angle (0 = off)", Unit = "°", Min = 0, Max = 45, Step = 1, Default = 6, Get = () => RockDegrees, Set = v => RockDegrees = v },
         };
 
         /// <summary>User-chosen title logo; the title becomes "S.E.T.I. @ {logo}" when it exists.</summary>
@@ -57,6 +62,8 @@ namespace RetroSeti
                     Name = k.GetValue("Name", Name) as string ?? Name;
                     foreach (var sp in Speeds)
                         sp.Set(Math.Max(sp.Min, Math.Min(sp.Max, ParseD(k.GetValue(sp.Key), sp.Default))));
+                    var ga = k.GetValue("GraphAngle") as string;
+                    if (Array.IndexOf(GraphAngles, ga) >= 0) GraphAngle = ga;
                     Wus = (int)ParseD(k.GetValue("Wus"), 0);
                     Cpu = ParseD(k.GetValue("Cpu"), 0);
                     var s = k.GetValue("Since") as string;
@@ -78,6 +85,7 @@ namespace RetroSeti
                 {
                     k.SetValue("Name", Name);
                     foreach (var sp in Speeds) k.SetValue(sp.Key, sp.Get().ToString(CultureInfo.InvariantCulture));
+                    k.SetValue("GraphAngle", GraphAngle);
                 }
             }
             catch { }
@@ -131,8 +139,14 @@ namespace RetroSeti
                 nums[sp] = num;
                 sy += 30;
             }
+            var lblAngle = new Label { Text = "Graph angle:", Location = new Point(12, sy + 4), AutoSize = true };
+            var angle = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(100, sy), Width = 284 };
+            angle.Items.AddRange(Settings.GraphAngleLabels);
+            angle.SelectedIndex = Math.Max(0, Array.IndexOf(Settings.GraphAngles, Settings.GraphAngle));
+            speedBox.Controls.AddRange(new Control[] { lblAngle, angle });
+            sy += 32;
             var defaults = new Button { Text = "Default speeds", Location = new Point(12, sy + 2), Width = 120 };
-            defaults.Click += (s, e) => { foreach (var kv in nums) kv.Value.Value = (decimal)kv.Key.Default; };
+            defaults.Click += (s, e) => { foreach (var kv in nums) kv.Value.Value = (decimal)kv.Key.Default; angle.SelectedIndex = 0; };
             speedBox.Controls.Add(defaults);
             speedBox.Height = sy + 40;
             y += speedBox.Height + 12;
@@ -193,6 +207,7 @@ namespace RetroSeti
                 if (DialogResult != DialogResult.OK) return;
                 Settings.Name = string.IsNullOrWhiteSpace(txtName.Text) ? "anonymous" : txtName.Text.Trim();
                 foreach (var kv in nums) kv.Key.Set((double)kv.Value.Value);
+                Settings.GraphAngle = Settings.GraphAngles[Math.Max(0, angle.SelectedIndex)];
                 Settings.SaveSettings();
             };
         }
