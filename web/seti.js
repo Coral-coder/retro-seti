@@ -44,30 +44,33 @@
   };
   if (params.get('name')) store.set('name', user.name);
 
-  // ---------- graph palette: hue by frequency, paler with power ----------
-  const HUES = [[0, [255, 30, 40]], [0.2, [245, 40, 170]], [0.33, [210, 40, 250]], [0.52, [130, 60, 250]],
-                [0.65, [40, 60, 245]], [0.83, [60, 160, 245]], [1, [70, 235, 240]]];
-  function hue(t) {
-    for (let i = 1; i < HUES.length; i++) {
-      if (t <= HUES[i][0]) {
-        const [t0, c0] = HUES[i - 1], [t1, c1] = HUES[i];
-        const f = (t - t0) / (t1 - t0);
-        return c0.map((v, j) => v + (c1[j] - v) * f);
-      }
-    }
-    return HUES[HUES.length - 1][1];
+  // ---------- graph colour (from Berkeley's GPL graphics code, reduce_lib.cpp) ----------
+  // hue sweeps across frequency, saturation 1, lightness = 0.5 + h/2 where h is the bar's
+  // height normalised to the array's min..max — so the tallest bars wash out to white.
+  // Classic sweep: red (hue 1.0) -> magenta -> blue -> cyan (hue 0.5).
+  const HUE0 = 1.0, DHUE = -0.5;
+  function hueToRgb(m1, m2, h) {
+    if (h < 0) h += 1; if (h > 1) h -= 1;
+    if (6 * h < 1) return m1 + (m2 - m1) * h * 6;
+    if (2 * h < 1) return m2;
+    if (3 * h < 2) return m1 + (m2 - m1) * (2 / 3 - h) * 6;
+    return m1;
   }
-  const LEVELS = 12;
+  function hlsToRgb(h, l, s) {
+    const m2 = l <= 0.5 ? l * (1 + s) : l + s - l * s, m1 = 2 * l - m2;
+    return [hueToRgb(m1, m2, h + 1 / 3), hueToRgb(m1, m2, h), hueToRgb(m1, m2, h - 1 / 3)].map((v) => v * 255);
+  }
+  const LEVELS = 16;
   // COLS[i][level] = {front, top, side}
   const COLS = [];
   for (let i = 0; i < NF; i++) {
-    const base = hue(i / (NF - 1));
+    let hu = HUE0 + DHUE * i / NF;
+    if (hu < 0) hu += 1; if (hu > 1) hu -= 1;
     const lv = [];
     for (let l = 0; l < LEVELS; l++) {
-      const w = (l / (LEVELS - 1)) ** 3 * 0.75;           // whiten tall bars
-      const c = base.map((v) => v + (255 - v) * w);
+      const c = hlsToRgb(hu, 0.5 + (l / (LEVELS - 1)) / 2, 1);
       const s = (k) => `rgb(${c.map((v) => Math.round(clamp(v * k, 0, 255))).join(',')})`;
-      lv.push({ front: s(0.8), top: s(1.2), side: s(0.38) });
+      lv.push({ front: s(0.82), top: s(1.15), side: s(0.4) });
     }
     COLS.push(lv);
   }
@@ -75,6 +78,8 @@
   // ---------- data unit simulation ----------
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const GAUSS_POT_LEN = 64, PULSE_POT_LEN = 256, TRIPLET_POT_LEN = 256;
+  const GROW_TIME = 3, HOLD_TIME = 2;   // graph animation defaults from the GPL code
 
   function newWorkUnit() {
     return {
@@ -83,90 +88,123 @@
       base: 1418750000 + Math.floor(rand(0, 256)) * BANDWIDTH,
       p: 0, cpu: 0,
       slots: Math.max(6, Math.round(WU_SECONDS / SLOT_SECONDS)),
-      bestPeak: 0,
+      best: { gauss: null, pulse: null, triplet: null },
     };
   }
 
   let wu = newWorkUnit();
   let phase = 'analyze';    // 'analyze' | 'sending' | 'receiving'
   let phaseT = 0;
+  let clock = 0;
 
-  // 3D graph data, rows[0] = time 0 (front)
-  const rows = [];
-  for (let t = 0; t < NT; t++) rows.push(new Float32Array(NF));
-  let sweepRow = 0, sweepAcc = 0, graphDirty = true, lastSlot = -1;
-
+  // Per (drift rate, FFT length) pair the real client went: Chirping data (when the drift
+  // rate changes) -> Computing Fast Fourier Transform -> Searching for Gaussians ->
+  // Searching for Pulses / Triplets. Status strings are the client's own.
   function slotState(p) {
     const q = p * wu.slots, k = Math.min(wu.slots - 1, Math.floor(q)), f = q - k;
     const fft = FFTS[k % FFTS.length];
     const ci = Math.floor(k / FFTS.length);
     const n = Math.ceil(ci / 2), sign = ci % 2 ? 1 : -1;
     const drift = sign * n * 0.0833 * (1 + (ci % 3) * 0.5);
-    let act, sub;
-    if (p < 0.004) { act = 'Doing baseline smoothing'; sub = p / 0.004; }
-    else if (f < 0.45) { act = 'Computing Fourier transforms'; sub = f / 0.45; }
-    else if (f < 0.65 && fft >= 128) { act = 'Searching for Gaussians'; sub = (f - 0.45) / 0.2; }
-    else { act = 'Searching for Pulses / Triplets'; sub = (f - (fft >= 128 ? 0.65 : 0.45)) / (fft >= 128 ? 0.35 : 0.55); }
+    const chirping = k % FFTS.length === 0 && k > 0;
+    let act, a, b;
+    if (p < 0.004) { act = 'Doing Baseline Smoothing'; a = 0; b = 0.004 * wu.slots; }
+    else if (chirping && f < 0.08) { act = 'Chirping data'; a = 0; b = 0.08; }
+    else if (f < 0.45) { act = 'Computing Fast Fourier Transform'; a = chirping ? 0.08 : 0; b = 0.45; }
+    else if (f < 0.65) { act = 'Searching for Gaussians'; a = 0.45; b = 0.65; }
+    else { act = 'Searching for Pulses / Triplets'; a = 0.65; b = 1; }
+    const sub = p < 0.004 ? p / 0.004 : (f - a) / (b - a);
     return { k, fft, drift, act, sub: clamp(sub, 0, 1), res: BANDWIDTH / fft };
   }
 
-  // A spectrum row: fewer independent bins at short FFT lengths (blocky), plus the odd spike.
+  // One reduced spectrum row (the client shows a max/avg-reduced power array).
   function makeRow(fft) {
     const row = new Float32Array(NF);
-    // short FFTs give coarse, smoother spectra; long FFTs give noisier ones
     const k = fft < 256 ? 4 : 3;
     for (let i = 0; i < NF; i++) { let v = 0; for (let j = 0; j < k; j++) v += expo(); row[i] = v / k; }
     if (Math.random() < 0.5) { const b = Math.floor(rand(0, NF)); row[b] += rand(2.5, 4.5); }
     return row;
   }
 
-  // Data Analysis panel detail line + mini graph (regenerated as the search advances)
-  const detail = { key: '', text: '', series: [], curve: null, next: 0 };
-  function updateDetail(st, now) {
-    const key = st.act + st.k;
-    if (key === detail.key && now < detail.next) return;
-    const fresh = key !== detail.key;
-    detail.key = key;
-    detail.next = now + (st.act.startsWith('Searching for Pulses') ? 450 : 900);
-    detail.curve = null;
-    if (st.act === 'Computing Fourier transforms' || st.act === 'Doing baseline smoothing') {
-      const row = rows[Math.max(0, sweepRow - 1)];
-      detail.series = Array.from(row);
-      let mi = 0;
-      for (let i = 1; i < NF; i++) if (row[i] > row[mi]) mi = i;
-      const power = row[mi] * rand(9, 14);
-      wu.bestPeak = Math.max(wu.bestPeak, power);
-      detail.text = `Strongest peak: power ${power.toFixed(2)}  (${(mi / NF * BANDWIDTH).toFixed(1)} Hz at ${(sweepRow / NT * WU_TIME).toFixed(2)} sec)`;
-    } else if (st.act === 'Searching for Gaussians') {
-      const n = 64, c = rand(22, 42), sig = rand(5, 9), amp = rand(0.5, 3.5);
-      detail.series = Array.from({ length: n }, (_, i) => 1 + amp * Math.exp(-0.5 * ((i - c) / sig) ** 2) + (expo() - 1) * 0.7);
-      detail.curve = Array.from({ length: n }, (_, i) => 1 + amp * Math.exp(-0.5 * ((i - c) / sig) ** 2));
-      const fit = rand(0.6, 9);
-      detail.text = `Gaussian: power ${amp.toFixed(2)}, fit ${fit.toFixed(3)}, score ${(amp / Math.sqrt(fit)).toFixed(2)}`;
-    } else {
-      const n = 96;
-      if (fresh || !detail.series.length) detail.series = Array.from({ length: n }, () => 1 + (expo() - 1) * 0.35);
-      else detail.series = detail.series.map((v) => clamp(v * 0.6 + (1 + (expo() - 1) * 0.35) * 0.4 + (Math.random() < 0.04 ? rand(0.6, 1.4) : 0), 0, 4));
-      const power = rand(0.4, 1.6), period = rand(0.02, 1.2);
-      detail.text = Math.random() < 0.25
-        ? `Triplet: power ${(power * 6).toFixed(2)}, period ${period.toFixed(4)}`
-        : `Pulse: power ${power.toFixed(2)}, period ${period.toFixed(4)}, score ${(power * rand(0.3, 0.6)).toFixed(2)}`;
-    }
+  // ---- 3D graph: a new array every GROW+HOLD seconds, revealed row by row ----
+  const graph = { rows: [], min: 0, max: 1, start: -1e9, shown: -1 };
+  let graphDirty = true;
+  function newGraphArray(fft) {
+    graph.rows = Array.from({ length: NT }, () => makeRow(fft));
+    let mn = Infinity, mx = -Infinity;
+    for (const r of graph.rows) for (const v of r) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    graph.min = mn; graph.max = mx; graph.start = clock; graph.shown = -1;
+  }
+  function graphRowsVisible() {
+    const e = clock - graph.start;
+    return e >= GROW_TIME ? NT : Math.floor(NT * e / GROW_TIME);
+  }
+
+  // ---- signals: new ones show immediately, otherwise rotate the bests every 5 s ----
+  const fmt = (v, w, p) => v.toFixed(p).padStart(w);
+  function makeGauss() {
+    const sigma = rand(3, 8), ind = rand(20, 44), peak = rand(0.4, 3.5), mean = rand(0.8, 1.2);
+    const pot = Array.from({ length: GAUSS_POT_LEN }, (_, i) => {
+      const d = (i - ind) / sigma;
+      return Math.max(0, mean + peak * Math.exp(-d * d * 0.693) + (expo() - 1) * 0.6);
+    });
+    const chisqr = rand(0.6, 9);
+    return { type: 'gauss', peak, mean, sigma, ind, pot, chisqr, score: peak / Math.sqrt(chisqr) * rand(0.3, 0.9) };
+  }
+  function makePulse() {
+    const period = rand(0.002, 1.2), peak = rand(0.5, 2.2);
+    const pot = Array.from({ length: PULSE_POT_LEN }, () => Math.min(255, 70 + expo() * 30));
+    const at = Math.floor(rand(0, PULSE_POT_LEN)); pot[at] = 255;
+    return { type: 'pulse', peak, period, pot, score: peak * rand(0.3, 0.6) };
+  }
+  function makeTriplet() {
+    const period = rand(0.01, 2), peak = rand(5, 14);
+    const pot = Array.from({ length: TRIPLET_POT_LEN }, () => Math.min(255, 60 + expo() * 25));
+    const t0 = Math.floor(rand(10, 80)), step = Math.floor(rand(30, 80));
+    const ticks = [t0, t0 + step, t0 + 2 * step].filter((t) => t < TRIPLET_POT_LEN);
+    for (const t of ticks) pot[t] = 255;
+    return { type: 'triplet', peak, period, pot, ticks, score: peak };
+  }
+  const signal = { shown: null, dirty: null };
+  function foundSignal(s) {
+    const key = s.type, cur = wu.best[key];
+    if (!cur || s.score > cur.score) wu.best[key] = s;
+    signal.dirty = s;
+  }
+  function chooseSignal() {
+    if (signal.dirty) { signal.shown = signal.dirty; signal.dirty = null; signal.until = clock + 5; return; }
+    if (signal.until && clock < signal.until) return;
+    const choices = ['gauss', 'pulse', 'triplet'].map((k) => wu.best[k]).filter(Boolean);
+    if (!choices.length) { signal.shown = null; return; }
+    signal.shown = choices[Math.floor((clock / 5) % choices.length)];
+  }
+  function signalText(s) {
+    if (!s) return '';
+    if (s.type === 'gauss') return `Gaussian: power ${fmt(s.peak, 5, 2)}, fit ${fmt(s.chisqr, 5, 3)}, score ${fmt(s.score, 5, 3)}`;
+    if (s.type === 'pulse') return `Pulse: power ${fmt(s.peak, 5, 2)}, period ${fmt(s.period, 6, 4)}, score ${fmt(s.score, 5, 2)}`;
+    return `Triplet: power ${fmt(s.peak, 5, 2)}, period ${fmt(s.period, 6, 4)}`;
   }
 
   // ---------- simulation tick ----------
-  let saveAcc = 0;
+  let saveAcc = 0, findAcc = 0;
   function tick(dt) {
+    clock += dt;
     phaseT += dt;
     if (phase === 'analyze') {
       wu.p += dt / WU_SECONDS;
       wu.cpu += dt;
       user.cpu += dt;
       const st = slotState(Math.min(wu.p, 0.99999));
-      if (st.k !== lastSlot) { lastSlot = st.k; sweepRow = 0; }
-      if (st.act === 'Computing Fourier transforms' && sweepRow < NT) {
-        sweepAcc += dt * NT / (SLOT_SECONDS * 0.45 * 0.9);
-        while (sweepAcc >= 1 && sweepRow < NT) { sweepAcc -= 1; rows[sweepRow++] = makeRow(st.fft); graphDirty = true; }
+      if (clock - graph.start >= GROW_TIME + HOLD_TIME) newGraphArray(st.fft);
+      // candidate signals turn up while their search is running
+      findAcc += dt;
+      if (findAcc > 1) {
+        findAcc = 0;
+        if (st.act === 'Searching for Gaussians' && Math.random() < 0.35) foundSignal(makeGauss());
+        if (st.act === 'Searching for Pulses / Triplets') {
+          if (Math.random() < 0.3) foundSignal(makePulse());
+          else if (Math.random() < 0.12) foundSignal(makeTriplet());
+        }
       }
       if (wu.p >= 1) {
         wu.p = 1; phase = 'sending'; phaseT = 0;
@@ -175,8 +213,11 @@
     } else if (phase === 'sending' && phaseT > 5) {
       phase = 'receiving'; phaseT = 0;
     } else if (phase === 'receiving' && phaseT > 5) {
-      wu = newWorkUnit(); phase = 'analyze'; phaseT = 0; lastSlot = -1;
+      wu = newWorkUnit(); phase = 'analyze'; phaseT = 0;
     }
+    chooseSignal();
+    const vis = graphRowsVisible();
+    if (vis !== graph.shown) { graph.shown = vis; graphDirty = true; }
     saveAcc += dt;
     if (saveAcc > 5) { saveAcc = 0; store.set('cpu', user.cpu); }
   }
@@ -228,6 +269,7 @@
   }
 
   function drawHeader() {
+    if (logoReady) { drawLogoTitle(); return; }
     drawLogo();
     ctx.letterSpacing = '1.5px';
     font(27, true, TITLE_FONT); ctx.fillStyle = WHITE; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
@@ -238,6 +280,30 @@
     const w2 = ctx.measureText('at HOME').width;
     ctx.letterSpacing = '0px';
     drawDish(285 + w + w2 + 40, 40);
+    text('Press F1 for info', 995, 31, 21);
+    text('Version 3.08', 1435, 31, 21, WHITE, 'right');
+    text(location.host ? (location.host + location.pathname).replace(/\/(index\.html)?$/, '') : 'retro-seti', 1210, 58, 17, WHITE, 'center');
+  }
+
+  // Custom title: "S.E.T.I. @ {logo}" once web/logo.png (or ?logo=URL) is present.
+  const logoImg = new Image();
+  let logoReady = false;
+  logoImg.onload = () => { logoReady = logoImg.naturalWidth > 0; };
+  logoImg.src = params.get('logo') || 'logo.png';
+
+  function drawLogoTitle() {
+    ctx.letterSpacing = '6px';
+    font(46, true, TITLE_FONT);
+    const label = 'S.E.T.I. @ ';
+    const tw = ctx.measureText(label).width;
+    const maxW = 560, maxH = 70;
+    const k = Math.min(maxW / logoImg.naturalWidth, maxH / logoImg.naturalHeight);
+    const lw = logoImg.naturalWidth * k, lh = logoImg.naturalHeight * k;
+    let x = 560 - (tw + lw) / 2;
+    ctx.fillStyle = WHITE; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(label, x, 62);
+    ctx.letterSpacing = '0px';
+    ctx.drawImage(logoImg, x + tw, 44 - lh / 2, lw, lh);
     text('Press F1 for info', 995, 31, 21);
     text('Version 3.08', 1435, 31, 21, WHITE, 'right');
     text(location.host ? (location.host + location.pathname).replace(/\/(index\.html)?$/, '') : 'retro-seti', 1210, 58, 17, WHITE, 'center');
@@ -270,7 +336,7 @@
     if (phase === 'analyze') {
       text(`Doppler drift rate: ${st.drift.toFixed(4)} Hz/sec`, 24, 195, 21);
       text(`Resolution: ${st.res < 1 ? st.res.toFixed(3) : st.res.toFixed(3)} Hz`, 362, 195, 21);
-      text(detail.text, 24, 223, 21);
+      text(signalText(signal.shown), 24, 223, 21);
       drawMiniGraph(24, 238, 773, 96);
     }
 
@@ -296,26 +362,38 @@
     text(`CPU time: ${hh} hr ${pad(mm)} min ${ss} sec`, 747, 418, 21, WHITE, 'right');
   }
 
-  function drawMiniGraph(x, y, w, h) {
-    const s = detail.series;
-    if (!s.length) return;
+  // Stepped "ribbon" graph, each series normalised to its own maximum (as in gutil.cpp).
+  function ribbon(data, x, y, w, h, color) {
     let max = 0;
-    for (const v of s) max = Math.max(max, v);
-    if (detail.curve) for (const v of detail.curve) max = Math.max(max, v);
-    max = Math.max(max, 1.5);
-    const sw = w / s.length;
-    ctx.strokeStyle = LINE_RED; ctx.lineWidth = 2; ctx.lineJoin = 'miter';
+    for (const v of data) max = Math.max(max, v);
+    if (!max) max = 1;
+    const sw = w / data.length;
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'miter';
     ctx.beginPath();
-    for (let i = 0; i < s.length; i++) {
-      const yy = y + h - (s[i] / max) * h;
+    for (let i = 0; i < data.length; i++) {
+      const yy = y + h - (data[i] / max) * h;
       if (i === 0) ctx.moveTo(x, yy); else ctx.lineTo(x + i * sw, yy);
       ctx.lineTo(x + (i + 1) * sw, yy);
     }
     ctx.stroke();
-    if (detail.curve) {
-      ctx.strokeStyle = WHITE; ctx.lineWidth = 2; ctx.beginPath();
-      detail.curve.forEach((v, i) => { const xx = x + (i + 0.5) * sw, yy = y + h - (v / max) * h; i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); });
-      ctx.stroke();
+  }
+
+  function drawMiniGraph(x, y, w, h) {
+    const s = signal.shown;
+    if (!s) return;
+    if (s.type === 'gauss') {
+      let max = 0;
+      for (const v of s.pot) max = Math.max(max, v);
+      const fit = s.pot.map((_, i) => { const d = (i - s.ind) / s.sigma; return (s.mean + s.peak * Math.exp(-d * d * 0.693)) / max; });
+      ribbon(s.pot, x, y, w, h, LINE_RED);
+      ribbon(fit, x, y, w, h, WHITE);
+    } else {
+      ribbon(s.pot, x, y, w, h, LINE_RED);
+      if (s.type === 'triplet') {
+        ctx.strokeStyle = GREEN; ctx.lineWidth = 3; ctx.beginPath();
+        for (const t of s.ticks) { const xx = x + (t + 0.5) * (w / s.pot.length); ctx.moveTo(xx, y + h * 0.2); ctx.lineTo(xx, y - h * 0.1); }
+        ctx.stroke();
+      }
     }
   }
 
@@ -356,13 +434,14 @@
     g.lineWidth = 1; g.strokeStyle = '#000'; g.lineJoin = 'miter';
 
     // back to front; within a row right to left (left side faces are the visible ones)
-    for (let t = NT - 1; t >= 0; t--) {
-      const row = rows[t];
+    const vis = graph.shown < 0 ? NT : graph.shown, span = (graph.max - graph.min) || 1;
+    for (let t = NT - 1; t >= NT - vis; t--) {
+      const row = graph.rows[NT - 1 - t];
       const ox = G.fx + t * ddx, oy = G.fy + t * ddy;
       for (let i = NF - 1; i >= 0; i--) {
         const v = row[i];
         const hgt = Math.min(maxH * 1.25, 4 + v * 30);
-        const lv = Math.min(LEVELS - 1, Math.floor(Math.max(0, hgt - 30) / (maxH * 1.25 - 30) * LEVELS));
+        const lv = Math.min(LEVELS - 1, Math.round((v - graph.min) / span * (LEVELS - 1)));
         const c = COLS[i][lv];
         const x = ox + i * cw, y = oy;
         // left side
@@ -450,7 +529,6 @@
 
     drawHeader();
     drawFrame();
-    updateDetail(slotState(Math.min(wu.p, 0.99999)), performance.now());
     drawAnalysis();
     drawDataInfo();
     drawUserInfo();
@@ -555,5 +633,5 @@
   poke();
 
   // pre-fill the graph so the first frame isn't empty
-  for (let t = 0; t < NT; t++) rows[t] = makeRow(1024);
+  newGraphArray(1024); graph.start = -GROW_TIME;
 })();

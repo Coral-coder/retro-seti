@@ -12,18 +12,14 @@ namespace RetroSeti
     static class Renderer
     {
         const float VW = 1500, VH = 885, GraphTop = 455;
-        const int Levels = 12;
+        const int Levels = 16;
         const string BodyFont = "Arial", TitleFont = "Arial Black";
         static readonly CultureInfo CI = CultureInfo.InvariantCulture;
 
         static readonly Color Purple = Color.FromArgb(0x9a, 0x66, 0xf6), Green = Color.FromArgb(0x35, 0xde, 0xa7),
             White = Color.White, LineRed = Color.FromArgb(0xc8, 0x32, 0x32), Grey = Color.FromArgb(0xa0, 0xa0, 0xa0);
 
-        static readonly (double t, double r, double g, double b)[] Hues =
-        {
-            (0, 255, 30, 40), (0.2, 245, 40, 170), (0.33, 210, 40, 250), (0.52, 130, 60, 250),
-            (0.65, 40, 60, 245), (0.83, 60, 160, 245), (1, 70, 235, 240),
-        };
+        const double Hue0 = 1.0, DHue = -0.5;    // red -> magenta -> blue -> cyan
 
         // per column, per height level: front / top / side brushes
         static readonly SolidBrush[,] Front = new SolidBrush[Sim.NF, Levels], Top = new SolidBrush[Sim.NF, Levels], Side = new SolidBrush[Sim.NF, Levels];
@@ -44,32 +40,32 @@ namespace RetroSeti
         {
             for (int i = 0; i < Sim.NF; i++)
             {
-                var b = Hue(i / (double)(Sim.NF - 1));
+                double hu = Hue0 + DHue * i / Sim.NF;
+                if (hu < 0) hu += 1; if (hu > 1) hu -= 1;
                 for (int l = 0; l < Levels; l++)
                 {
-                    double w = Math.Pow(l / (double)(Levels - 1), 3) * 0.75;
-                    double r = b.r + (255 - b.r) * w, g = b.g + (255 - b.g) * w, bl = b.b + (255 - b.b) * w;
-                    Front[i, l] = new SolidBrush(Mul(r, g, bl, 0.8));
-                    Top[i, l] = new SolidBrush(Mul(r, g, bl, 1.2));
-                    Side[i, l] = new SolidBrush(Mul(r, g, bl, 0.38));
+                    var (r, g, bl) = HlsToRgb(hu, 0.5 + l / (double)(Levels - 1) / 2, 1);
+                    Front[i, l] = new SolidBrush(Mul(r, g, bl, 0.82));
+                    Top[i, l] = new SolidBrush(Mul(r, g, bl, 1.15));
+                    Side[i, l] = new SolidBrush(Mul(r, g, bl, 0.4));
                 }
             }
             Fmt.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap;
         }
 
-        static (double r, double g, double b) Hue(double t)
+        static double HueToRgb(double m1, double m2, double h)
         {
-            for (int i = 1; i < Hues.Length; i++)
-            {
-                if (t <= Hues[i].t)
-                {
-                    var a = Hues[i - 1]; var c = Hues[i];
-                    double f = (t - a.t) / (c.t - a.t);
-                    return (a.r + (c.r - a.r) * f, a.g + (c.g - a.g) * f, a.b + (c.b - a.b) * f);
-                }
-            }
-            var l = Hues[Hues.Length - 1];
-            return (l.r, l.g, l.b);
+            if (h < 0) h += 1; if (h > 1) h -= 1;
+            if (6 * h < 1) return m1 + (m2 - m1) * h * 6;
+            if (2 * h < 1) return m2;
+            if (3 * h < 2) return m1 + (m2 - m1) * (2.0 / 3 - h) * 6;
+            return m1;
+        }
+
+        static (double r, double g, double b) HlsToRgb(double h, double l, double s)
+        {
+            double m2 = l <= 0.5 ? l * (1 + s) : l + s - l * s, m1 = 2 * l - m2;
+            return (HueToRgb(m1, m2, h + 1.0 / 3) * 255, HueToRgb(m1, m2, h) * 255, HueToRgb(m1, m2, h - 1.0 / 3) * 255);
         }
 
         static Color Mul(double r, double g, double b, double k) =>
@@ -213,8 +209,45 @@ namespace RetroSeti
             g.Restore(st);
         }
 
+        static Image customLogo;
+        static bool logoChecked;
+
+        static Image CustomLogo()
+        {
+            if (logoChecked) return customLogo;
+            logoChecked = true;
+            try
+            {
+                string beside = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logo.png");
+                if (System.IO.File.Exists(beside)) return customLogo = Image.FromFile(beside);
+                var st = typeof(Renderer).Assembly.GetManifestResourceStream("logo.png");
+                if (st != null) customLogo = Image.FromStream(st);
+            }
+            catch { customLogo = null; }
+            return customLogo;
+        }
+
         static void DrawHeader(Graphics g)
         {
+            var logo = CustomLogo();
+            if (logo != null)
+            {
+                var f = F(46, false, TitleFont);
+                string label = "S.E.T.I. @ ";
+                float tw = g.MeasureString(label, f, PointF.Empty, Fmt).Width;
+                float k = Math.Min(560f / logo.Width, 70f / logo.Height);
+                float lw = logo.Width * k, lh = logo.Height * k;
+                float x = 560 - (tw + lw) / 2;
+                Text(g, label, x, 62, 46, White, Align.Left, false, TitleFont);
+                var im = g.InterpolationMode;
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(logo, x + tw, 44 - lh / 2, lw, lh);
+                g.InterpolationMode = im;
+                Text(g, "Press F1 for info", 995, 31, 21, White);
+                Text(g, "Version 3.08", 1435, 31, 21, White, Align.Right);
+                Text(g, Url, 1210, 58, 17, White, Align.Center);
+                return;
+            }
             DrawLogo(g);
             Text(g, "The Search for", 198, 32, 27, White, Align.Left, false, TitleFont);
             float w = Text(g, "Extraterrestrial Intelligence ", 285, 63, 27, White, Align.Left, false, TitleFont);
@@ -254,7 +287,7 @@ namespace RetroSeti
             {
                 Text(g, "Doppler drift rate: " + st.Drift.ToString("0.0000", CI) + " Hz/sec", 24, 195, 21, White);
                 Text(g, "Resolution: " + st.Res.ToString("0.000", CI) + " Hz", 362, 195, 21, White);
-                Text(g, Sim.DetailText, 24, 223, 21, White);
+                Text(g, Sim.SignalText(Sim.Shown), 24, 223, 21, White);
                 DrawMiniGraph(g, 24, 238, 773, 96);
             }
 
@@ -283,30 +316,47 @@ namespace RetroSeti
             Text(g, "CPU time: " + Hms(wu.Cpu), 747, 418, 21, White, Align.Right);
         }
 
-        static void DrawMiniGraph(Graphics g, float x, float y, float w, float h)
+        // stepped "ribbon" graph, normalised to its own maximum (as in gutil.cpp)
+        static void Ribbon(Graphics g, double[] d, float x, float y, float w, float h, Color c)
         {
-            var s = Sim.Series;
-            if (s.Length == 0) return;
-            double max = 1.5;
-            foreach (var v in s) max = Math.Max(max, v);
-            if (Sim.Curve != null) foreach (var v in Sim.Curve) max = Math.Max(max, v);
-            float sw = w / s.Length;
-            var pts = new PointF[s.Length * 2];
-            for (int i = 0; i < s.Length; i++)
+            double max = 0;
+            foreach (var v in d) max = Math.Max(max, v);
+            if (max == 0) max = 1;
+            float sw = w / d.Length;
+            var pts = new PointF[d.Length * 2];
+            for (int i = 0; i < d.Length; i++)
             {
-                float yy = (float)(y + h - s[i] / max * h);
+                float yy = (float)(y + h - d[i] / max * h);
                 pts[i * 2] = new PointF(x + i * sw, yy);
                 pts[i * 2 + 1] = new PointF(x + (i + 1) * sw, yy);
             }
             var sm = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.None;
-            using (var p = new Pen(LineRed, 2) { LineJoin = LineJoin.Miter }) g.DrawLines(p, pts);
+            using (var p = new Pen(c, 2) { LineJoin = LineJoin.Miter }) g.DrawLines(p, pts);
             g.SmoothingMode = sm;
-            if (Sim.Curve != null)
+        }
+
+        static void DrawMiniGraph(Graphics g, float x, float y, float w, float h)
+        {
+            var s = Sim.Shown;
+            if (s == null) return;
+            Ribbon(g, s.Pot, x, y, w, h, LineRed);
+            if (s.Type == "gauss")
             {
-                var c = new PointF[Sim.Curve.Length];
-                for (int i = 0; i < c.Length; i++) c[i] = new PointF(x + (i + 0.5f) * sw, (float)(y + h - Sim.Curve[i] / max * h));
-                using (var p = new Pen(White, 2)) g.DrawLines(p, c);
+                double max = 0;
+                foreach (var v in s.Pot) max = Math.Max(max, v);
+                var fit = new double[s.Pot.Length];
+                for (int i = 0; i < fit.Length; i++) { double d = (i - s.Ind) / s.Sigma; fit[i] = (s.Mean + s.Peak * Math.Exp(-d * d * 0.693)) / max; }
+                Ribbon(g, fit, x, y, w, h, White);
+            }
+            else if (s.Type == "triplet" && s.Ticks != null)
+            {
+                using (var p = new Pen(Green, 3))
+                    foreach (var t in s.Ticks)
+                    {
+                        float xx = x + (t + 0.5f) * (w / s.Pot.Length);
+                        g.DrawLine(p, xx, y + h * 0.2f, xx, y - h * 0.1f);
+                    }
             }
         }
 
@@ -351,14 +401,16 @@ namespace RetroSeti
                 float cw = Gfw / Sim.NF;
                 using (var outline = new Pen(Color.Black, 1f / Math.Max(scale, 0.5f)))
                 {
-                    for (int t = Sim.NT - 1; t >= 0; t--)
+                    int vis = Sim.GraphVisible < 0 ? Sim.NT : Sim.GraphVisible;
+                    double span = Sim.GraphMax - Sim.GraphMin; if (span <= 0) span = 1;
+                    for (int t = Sim.NT - 1; t >= Sim.NT - vis; t--)
                     {
-                        var row = Sim.Rows[t];
+                        var row = Sim.GraphRows[Sim.NT - 1 - t];
                         float ox = Gfx + t * Ddx, oy = Gfy + t * Ddy;
                         for (int i = Sim.NF - 1; i >= 0; i--)
                         {
                             float hgt = (float)Math.Min(MaxH * 1.25, 4 + row[i] * 30);
-                            int lv = Math.Min(Levels - 1, (int)Math.Floor(Math.Max(0, hgt - 30) / (MaxH * 1.25 - 30) * Levels));
+                            int lv = Math.Max(0, Math.Min(Levels - 1, (int)Math.Round((row[i] - Sim.GraphMin) / span * (Levels - 1))));
                             float x = ox + i * cw, y = oy;
                             Quad[0] = new PointF(x, y); Quad[1] = new PointF(x, y - hgt); Quad[2] = new PointF(x + Ddx, y - hgt + Ddy); Quad[3] = new PointF(x + Ddx, y + Ddy);
                             g.FillPolygon(Side[i, lv], Quad);

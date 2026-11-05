@@ -8,6 +8,31 @@ User Info, and the graph that sweeps front-to-back for each FFT pass. Data units
 "send" and get replaced. **All data is simulated.** Nothing is downloaded or uploaded. The
 globe/wave logo and dish are redrawn, not copied from the original.
 
+### How closely it follows the original
+
+- **Layout and palette** are measured from screenshots of the classic v3.07 client.
+- **Behaviour** follows Berkeley's GPL-licensed SETI@home graphics code (`seti_boinc`,
+  `sah_gfx.cpp`, and BOINC's `reduce_lib.cpp` / `gutil.cpp`), which descends from the classic client:
+  - status strings: *Doing Baseline Smoothing*, *Chirping data*, *Computing Fast Fourier
+    Transform*, *Searching for Gaussians*, *Searching for Pulses / Triplets*
+  - signal readouts in the client's own `printf` formats, e.g. `Pulse: power %5.2f, period %6.4f, score %5.2f`
+  - new signals show at once; otherwise the best Gaussian, pulse and triplet rotate every 5 s
+    (red stepped "ribbon" graphs, a white fitted curve for Gaussians, green ticks for triplets)
+  - the 3D graph swaps in a new data array every 5 s: it grows row by row for 3 s, then holds for 2 s
+  - bar colour is HLS: the hue sweeps across frequency, and lightness is `0.5 + h/2` with `h`
+    normalised to the array's min/max, so the tallest bars wash out to white
+- The classic 3.x client's own source was never released under an open licence, so it was not
+  disassembled or copied. No source or documentation shows any sound, so the screensaver is
+  silent, as the original appears to have been.
+
+### Custom title logo
+
+Put a `logo.png` in `web/`. A transparent or black background works best, wide (about 7:1)
+is ideal, and the logo is scaled to 70 px high. The title then becomes **"S.E.T.I. @ {logo}"**
+instead of the classic "The Search for Extraterrestrial Intelligence at HOME". The Windows
+build embeds the same file (or reads a `logo.png` placed next to the `.scr`). You can also
+try a logo without committing it: `?logo=https://…/image.png`.
+
 ## Web version (GitHub Pages)
 
 `web/` is a dependency-free static page (`index.html` + `seti.js`, canvas-rendered).
@@ -53,6 +78,11 @@ Build locally (Windows or Linux, .NET 8 SDK):
 dotnet build windows/RetroSETI.csproj -c Release -o build
 copy build\RetroSETI.exe RetroSETI.scr
 ```
+
+## License
+
+GPL-2.0-or-later (see `LICENSE`), because the behaviour and formulas follow Berkeley's
+GPL-licensed SETI@home graphics code.
 
 ---
 Not affiliated with UC Berkeley or the SETI@home project.
