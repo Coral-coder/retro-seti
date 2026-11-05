@@ -12,7 +12,6 @@
 
   // ---------- config ----------
   const VW = 1500, VH = 885;            // virtual canvas (same aspect as the original 753x444)
-  const NF = 128, NT = 48;              // frequency columns x time rows in the 3D graph
   const params = new URLSearchParams(location.search);
   // ---- user-adjustable speeds (Settings window, saved in this browser) ----
   const DEFAULTS = {
@@ -21,18 +20,18 @@
     growSeconds: 6,     // 3D graph: time to grow in row by row
     holdSeconds: 4,     // 3D graph: time to hold before the next array
     signalSeconds: 8,   // how long each best signal is shown before rotating
-    rockSeconds: 40,    // one full left-right-left rock of the 3D graph
-    rockDegrees: 6,     // how far it rocks each way (0 = still)
+    graphAngle: 'classic', // 'classic' = random lean per graph (as 3.08 did), 'rock' = sweeps side to side, 'fixed'
   };
   const LIMITS = {
     wuMinutes: [1, 600, 1], stepSeconds: [5, 60, 1], growSeconds: [1, 20, 0.5], holdSeconds: [0, 20, 0.5],
-    signalSeconds: [2, 30, 1], rockSeconds: [10, 120, 1], rockDegrees: [0, 45, 1],
+    signalSeconds: [2, 30, 1],
   };
   const FFTS = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
   const BANDWIDTH = 9765.625;           // Hz per data unit
   const WU_TIME = 107.374;              // seconds of telescope data per data unit
 
-  const PURPLE = '#9a66f6', GREEN = '#35dea7', WHITE = '#ffffff', LINE_RED = '#c83232', GREY = '#a0a0a0';
+  // colours from the 3.08 client's static colour table
+  const PURPLE = 'rgb(153,102,255)', GREEN = '#35dea7', WHITE = '#ffffff', LINE_RED = 'rgb(255,0,0)', GREY = 'rgb(127,127,127)';
   const FONT = 'Arial, "Liberation Sans", Helvetica, sans-serif';
   const TITLE_FONT = '"Arial Black", "Arial", "Liberation Sans", Helvetica, sans-serif';
 
@@ -58,13 +57,10 @@
 
   const cfg = Object.assign({}, DEFAULTS, store.get('settings', {}));
   for (const k of Object.keys(LIMITS)) cfg[k] = clamp(+cfg[k] || DEFAULTS[k], LIMITS[k][0], LIMITS[k][1]);
+  if (!['classic', 'rock', 'fixed'].includes(cfg.graphAngle)) cfg.graphAngle = DEFAULTS.graphAngle;
   if (params.get('wu')) cfg.wuMinutes = clamp(parseFloat(params.get('wu')) || 15, 0.5, 600);
 
-  // ---------- graph colour (from Berkeley's GPL graphics code, reduce_lib.cpp) ----------
-  // hue sweeps across frequency, saturation 1, lightness = 0.5 + h/2 where h is the bar's
-  // height normalised to the array's min..max — so the tallest bars wash out to white.
-  // Classic sweep: red (hue 1.0) -> magenta -> blue -> cyan (hue 0.5).
-  const HUE0 = 1.0, DHUE = -0.5;
+  // ---------- colour: the classic client's HLS -> RGB (0x412210 in SETI@home 3.08) ----------
   function hueToRgb(m1, m2, h) {
     if (h < 0) h += 1; if (h > 1) h -= 1;
     if (6 * h < 1) return m1 + (m2 - m1) * h * 6;
@@ -73,33 +69,20 @@
     return m1;
   }
   function hlsToRgb(h, l, s) {
+    if (s === 0) { const v = Math.trunc(l * 255); return [v, v, v]; }
     const m2 = l <= 0.5 ? l * (1 + s) : l + s - l * s, m1 = 2 * l - m2;
-    return [hueToRgb(m1, m2, h + 1 / 3), hueToRgb(m1, m2, h), hueToRgb(m1, m2, h - 1 / 3)].map((v) => v * 255);
-  }
-  const LEVELS = 16;
-  // COLS[i][level] = {front, top, side}
-  const COLS = [];
-  for (let i = 0; i < NF; i++) {
-    let hu = HUE0 + DHUE * i / NF;
-    if (hu < 0) hu += 1; if (hu > 1) hu -= 1;
-    const lv = [];
-    for (let l = 0; l < LEVELS; l++) {
-      const c = hlsToRgb(hu, 0.5 + (l / (LEVELS - 1)) / 2, 1);
-      const s = (k) => `rgb(${c.map((v) => Math.round(clamp(v * k, 0, 255))).join(',')})`;
-      lv.push({ front: s(0.82), top: s(1.15), side: s(0.4) });
-    }
-    COLS.push(lv);
+    return [hueToRgb(m1, m2, h + 1 / 3), hueToRgb(m1, m2, h), hueToRgb(m1, m2, h - 1 / 3)].map((v) => Math.trunc(v * 255));
   }
 
   // ---------- data unit simulation ----------
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const GAUSS_POT_LEN = 64, PULSE_POT_LEN = 256, TRIPLET_POT_LEN = 256;
-  // graph grow/hold animation as in the GPL code (its defaults were 3 s / 2 s; ours are in cfg)
+  const WU_SAMPLES = 1048576;           // complex samples in one data unit
 
   function newWorkUnit() {
     return {
-      ra: rand(0, 24), dec: rand(-1.5, 38),
+      ra: rand(0, 24), dec: rand(0, 38),
       recorded: new Date(Date.UTC(1999, 0, 1) + rand(0, 7 * 365.25 * 86400000)),
       base: 1418750000 + Math.floor(rand(0, 256)) * BANDWIDTH,
       p: 0, cpu: 0,
@@ -113,9 +96,9 @@
   let phaseT = 0;
   let clock = 0;
 
-  // Per (drift rate, FFT length) pair the real client went: Chirping data (when the drift
-  // rate changes) -> Computing Fast Fourier Transform -> Searching for Gaussians ->
-  // Searching for Pulses / Triplets. Status strings are the client's own.
+  // Per (drift rate, FFT length) pass the client went: Chirping data (when the drift rate
+  // changes) -> Computing Fast Fourier Transform -> Searching for Gaussians ->
+  // Searching for Pulses / Triplets. These are the client's own status strings.
   function slotState(p) {
     const q = p * wu.slots, k = Math.min(wu.slots - 1, Math.floor(q)), f = q - k;
     const fft = FFTS[k % FFTS.length];
@@ -133,30 +116,71 @@
     return { k, fft, drift, act, sub: clamp(sub, 0, 1), res: BANDWIDTH / fft };
   }
 
-  // One reduced spectrum row (the client shows a max/avg-reduced power array).
-  function makeRow(fft) {
-    const row = new Float32Array(NF);
-    const k = fft < 256 ? 4 : 3;
-    for (let i = 0; i < NF; i++) { let v = 0; for (let j = 0; j < k; j++) v += expo(); row[i] = v / k; }
-    if (Math.random() < 0.5) { const b = Math.floor(rand(0, NF)); row[b] += rand(2.5, 4.5); }
-    return row;
+  // ---- the 3D graph, as the 3.08 client built it ----
+  // Graph area (in the original's pixels): width = panel - 110, height = panel - 20.
+  // Every new graph gets a random viewpoint: dx = 50..119, dy = 200 - dx, and a coin flip
+  // for whether the rows lean left or right. One row per pixel of depth; columns = width - dx;
+  // bar height budget = height - dy. FFT bins are max-reduced (or stretched) onto the columns,
+  // and each row is scaled linearly against the largest value seen so far in this graph.
+  const PW = 750, PH = 206, WG = PW - 110, HG = PH - 20, BASE = PH - 20, MARG = 60;
+  const cg = { gen: 0, flag: 0, dx: 57, dy: 143, n: 143, ncols: 583, maxH: 43, fft: 1024,
+               rows: [], maxSoFar: 0, start: -1e9, emitted: 0, leanStep: 0, lastSpec: -1 };
+
+  function gumbelMax(q) { return q <= 1 ? expo() : Math.log(q) - Math.log(-Math.log(1 - Math.random() * 0.999999)); }
+
+  function newGraph(fft) {
+    let flag, dx;
+    if (cfg.graphAngle === 'fixed') { flag = 0; dx = 57; }
+    else if (cfg.graphAngle === 'rock') {
+      const s = Math.sin(cg.leanStep++ * 0.45);
+      flag = s < 0 ? 1 : 0; dx = 50 + Math.round(69 * Math.abs(s));
+    } else { flag = Math.random() < 0.5 ? 0 : 1; dx = 50 + Math.floor(Math.random() * 70); }
+    const dy = 200 - dx;
+    Object.assign(cg, {
+      gen: cg.gen + 1, flag, dx, dy, n: Math.max(dx, dy), ncols: WG - dx, maxH: HG - dy, fft,
+      rows: [], maxSoFar: 0, start: clock, emitted: 0, lastSpec: -1,
+    });
   }
 
-  // ---- 3D graph: a new array every GROW+HOLD seconds, revealed row by row ----
-  const graph = { rows: [], min: 0, max: 1, start: -1e9, shown: -1 };
-  let graphDirty = true;
-  function newGraphArray(fft) {
-    graph.rows = Array.from({ length: NT }, () => makeRow(fft));
-    let mn = Infinity, mx = -Infinity;
-    for (const r of graph.rows) for (const v of r) { if (v < mn) mn = v; if (v > mx) mx = v; }
-    graph.min = mn; graph.max = mx; graph.start = clock; graph.shown = -1;
-  }
-  function graphRowsVisible() {
-    const e = clock - graph.start;
-    return e >= cfg.growSeconds ? NT : Math.floor(NT * e / cfg.growSeconds);
+  function emitRow() {
+    const r = cg.emitted, n = cg.n, ncols = cg.ncols;
+    const nfft = WU_SAMPLES / cg.fft;                       // FFTs in this pass
+    const spec = Math.floor(r * Math.min(nfft, n) / n);     // which spectrum feeds this row
+    let h;
+    if (spec === cg.lastSpec && r > 0) {
+      h = cg.rows[r - 1];                                   // fewer FFTs than rows: repeat the row
+    } else {
+      const m = Math.max(1, Math.floor(nfft / n));          // FFTs merged (max) into this row
+      const v = new Float32Array(ncols);
+      if (cg.fft >= ncols) {
+        const k = Math.floor(cg.fft / ncols) * m;
+        for (let c = 0; c < ncols; c++) v[c] = gumbelMax(k);
+      } else {
+        const w = ncols / cg.fft;                           // one bin stretched over w columns
+        for (let b = 0; b < cg.fft; b++) {
+          const val = gumbelMax(m);
+          for (let c = Math.floor(b * w); c < Math.floor((b + 1) * w); c++) v[c] = val;
+        }
+      }
+      if (Math.random() < 0.04) {                           // the odd narrow-band spike
+        const c0 = Math.floor(Math.random() * ncols), wid = Math.max(1, Math.floor(ncols / cg.fft));
+        const boost = rand(2, 5);
+        for (let c = c0; c < Math.min(ncols, c0 + wid); c++) v[c] *= boost;
+      }
+      let rowMax = 0;
+      for (let c = 0; c < ncols; c++) if (v[c] > rowMax) rowMax = v[c];
+      cg.maxSoFar = Math.max(cg.maxSoFar, rowMax);
+      h = new Uint8Array(ncols);
+      for (let c = 0; c < ncols; c++) h[c] = Math.trunc(cg.maxH * v[c] / cg.maxSoFar);
+      cg.lastSpec = spec;
+    }
+    cg.rows.push(h);
+    cg.emitted++;
   }
 
-  // ---- signals: new ones show immediately, otherwise rotate the bests every 5 s ----
+  // ---- signals ----
+  // The small graph is blank until something interesting turns up. While a search runs it
+  // shows the candidate being examined; otherwise the best found so far ("Best ...").
   const fmt = (v, w, p) => v.toFixed(p).padStart(w);
   function makeGauss() {
     const sigma = rand(3, 8), ind = rand(20, 44), peak = rand(0.4, 3.5), mean = rand(0.8, 1.2);
@@ -165,12 +189,12 @@
       return Math.max(0, mean + peak * Math.exp(-d * d * 0.693) + (expo() - 1) * 0.6);
     });
     const chisqr = rand(0.6, 9);
-    return { type: 'gauss', peak, mean, sigma, ind, pot, chisqr, score: peak / Math.sqrt(chisqr) * rand(0.3, 0.9) };
+    return { type: 'gauss', peak, mean, sigma, ind, pot, chisqr, score: peak / Math.sqrt(chisqr) };
   }
   function makePulse() {
     const period = rand(0.002, 1.2), peak = rand(0.5, 2.2);
     const pot = Array.from({ length: PULSE_POT_LEN }, () => Math.min(255, 70 + expo() * 30));
-    const at = Math.floor(rand(0, PULSE_POT_LEN)); pot[at] = 255;
+    pot[Math.floor(rand(0, PULSE_POT_LEN))] = 255;
     return { type: 'pulse', peak, period, pot, score: peak * rand(0.3, 0.6) };
   }
   function makeTriplet() {
@@ -181,59 +205,57 @@
     for (const t of ticks) pot[t] = 255;
     return { type: 'triplet', peak, period, pot, ticks, score: peak };
   }
-  const signal = { shown: null, dirty: null };
-  function foundSignal(s) {
-    const key = s.type, cur = wu.best[key];
-    if (!cur || s.score > cur.score) wu.best[key] = s;
-    signal.dirty = s;
+  const signal = { shown: null, best: false, current: null, until: 0 };
+  function keepBest(s) { const cur = wu.best[s.type]; if (!cur || s.score > cur.score) wu.best[s.type] = s; }
+  function chooseSignal(st) {
+    if (phase === 'analyze' && st.act === 'Searching for Gaussians') {
+      if (!signal.current || signal.current.type !== 'gauss' || clock > signal.until) {
+        signal.current = makeGauss(); keepBest(signal.current); signal.until = clock + cfg.signalSeconds / 4;
+      }
+      signal.shown = signal.current; signal.best = false; return;
+    }
+    if (phase === 'analyze' && st.act === 'Searching for Pulses / Triplets') {
+      if (!signal.current || signal.current.type === 'gauss' || clock > signal.until) {
+        if (Math.random() < 0.15) { const t = makeTriplet(); keepBest(t); signal.current = t; }
+        else { signal.current = makePulse(); keepBest(signal.current); }
+        signal.until = clock + cfg.signalSeconds / 4;
+      }
+      signal.shown = signal.current; signal.best = signal.current.type === 'triplet'; return;
+    }
+    signal.current = null;
+    const b = wu.best.gauss || wu.best.pulse || wu.best.triplet;
+    signal.shown = b; signal.best = true;
   }
-  function chooseSignal() {
-    if (signal.dirty) { signal.shown = signal.dirty; signal.dirty = null; signal.until = clock + cfg.signalSeconds; return; }
-    if (signal.until && clock < signal.until) return;
-    const choices = ['gauss', 'pulse', 'triplet'].map((k) => wu.best[k]).filter(Boolean);
-    if (!choices.length) { signal.shown = null; return; }
-    signal.shown = choices[Math.floor((clock / cfg.signalSeconds) % choices.length)];
-  }
-  function signalText(s) {
+  function signalText(s, best) {
     if (!s) return '';
-    if (s.type === 'gauss') return `Gaussian: power ${fmt(s.peak, 5, 2)}, fit ${fmt(s.chisqr, 5, 3)}, score ${fmt(s.score, 5, 3)}`;
-    if (s.type === 'pulse') return `Pulse: power ${fmt(s.peak, 5, 2)}, period ${fmt(s.period, 6, 4)}, score ${fmt(s.score, 5, 2)}`;
-    return `Triplet: power ${fmt(s.peak, 5, 2)}, period ${fmt(s.period, 6, 4)}`;
+    if (s.type === 'gauss') return `${best ? 'Best ' : ''}Gaussian: power ${fmt(s.peak, 5, 2)}, fit ${fmt(s.chisqr, 5, 3)}`;
+    if (s.type === 'pulse') return `${best ? 'Best ' : ''}Pulse: power ${fmt(s.peak, 5, 2)}, period ${fmt(s.period, 6, 4)}, score ${fmt(s.score, 5, 2)}`;
+    return `Best Triplet: power ${fmt(s.peak, 5, 2)}, period ${fmt(s.period, 6, 4)}`;
   }
 
   // ---------- simulation tick ----------
-  let saveAcc = 0, findAcc = 0;
+  let saveAcc = 0;
   function tick(dt) {
     clock += dt;
     phaseT += dt;
+    const st = slotState(Math.min(wu.p, 0.99999));
     if (phase === 'analyze') {
       wu.p += dt / (cfg.wuMinutes * 60);
       wu.cpu += dt;
       user.cpu += dt;
-      const st = slotState(Math.min(wu.p, 0.99999));
-      if (clock - graph.start >= cfg.growSeconds + cfg.holdSeconds) newGraphArray(st.fft);
-      // candidate signals turn up while their search is running
-      findAcc += dt;
-      if (findAcc > cfg.stepSeconds / 10) {
-        findAcc = 0;
-        if (st.act === 'Searching for Gaussians' && Math.random() < 0.35) foundSignal(makeGauss());
-        if (st.act === 'Searching for Pulses / Triplets') {
-          if (Math.random() < 0.3) foundSignal(makePulse());
-          else if (Math.random() < 0.12) foundSignal(makeTriplet());
-        }
-      }
+      if (clock - cg.start >= cfg.growSeconds + cfg.holdSeconds) newGraph(st.fft);
       if (wu.p >= 1) {
         wu.p = 1; phase = 'sending'; phaseT = 0;
         user.wus++; store.set('wus', user.wus); store.set('cpu', user.cpu);
       }
     } else if (phase === 'sending' && phaseT > 5) {
       phase = 'receiving'; phaseT = 0;
-    } else if (phase === 'receiving' && phaseT > 5) {
+    } else if (phase === 'receiving' && phaseT > 6) {
       wu = newWorkUnit(); phase = 'analyze'; phaseT = 0;
     }
-    chooseSignal();
-    const vis = graphRowsVisible();
-    if (vis !== graph.shown) { graph.shown = vis; graphDirty = true; }
+    const due = Math.min(cg.n, Math.floor(cg.n * (clock - cg.start) / cfg.growSeconds));
+    while (cg.emitted < due) emitRow();
+    chooseSignal(st);
     saveAcc += dt;
     if (saveAcc > 5) { saveAcc = 0; store.set('cpu', user.cpu); }
   }
@@ -347,31 +369,44 @@
   }
 
   // ---------- Data Analysis ----------
+  // Text formats are the 3.08 client's own printf strings.
+  const hms = (c) => `${Math.floor(c / 3600)} hr ${pad(Math.floor(c / 60) % 60)} min ${(c % 60).toFixed(1).padStart(4, '0')} sec`;
+
+  function transferStatus() {
+    const t = phaseT;
+    if (phase === 'sending') {
+      if (t < 1) return ['Sending result - connecting to server.', t];
+      if (t < 4.2) return [`Sending data: ${Math.max(1, Math.floor((t - 1) / 3.2 * 18))}K`, t / 5];
+      return ['All data sent.', 1];
+    }
+    if (t < 1) return ['Getting data - connecting to server.', t / 6];
+    if (t < 5) return [`Receiving data: ${Math.max(1, Math.floor((t - 1) / 4 * 340))}K`, t / 6];
+    return ['All data received.', 1];
+  }
+
   function drawAnalysis() {
     const st = slotState(Math.min(wu.p, 0.99999));
     text('Data Analysis', 361, 140, 22, WHITE, 'center');
     let act = st.act, sub = st.sub;
-    if (phase === 'sending') { act = 'Sending result to server'; sub = clamp(phaseT / 5, 0, 1); }
-    if (phase === 'receiving') { act = 'Getting new data unit'; sub = clamp(phaseT / 5, 0, 1); }
+    if (phase !== 'analyze') [act, sub] = transferStatus();
     text(act, 24, 167, 21);
-    text(`${Math.floor(sub * 100)}%`, 565, 167, 21, WHITE, 'right');
-    ctx.fillStyle = WHITE; ctx.fillRect(582, 153, Math.max(2, 200 * sub), 11);
+    text(`${Math.floor(clamp(sub, 0, 1) * 100)}%`, 565, 167, 21, WHITE, 'right');
+    ctx.fillStyle = WHITE; ctx.fillRect(582, 153, Math.max(2, 200 * clamp(sub, 0, 1)), 11);
 
     if (phase === 'analyze') {
-      text(`Doppler drift rate: ${st.drift.toFixed(4)} Hz/sec`, 24, 195, 21);
-      text(`Resolution: ${st.res < 1 ? st.res.toFixed(3) : st.res.toFixed(3)} Hz`, 362, 195, 21);
-      text(signalText(signal.shown), 24, 223, 21);
+      text(`Doppler drift rate: ${fmt(st.drift, 6, 4)} Hz/sec    Resolution: ${fmt(st.res, 5, 3)} Hz`, 24, 195, 21);
+      text(signalText(signal.shown, signal.best), 24, 223, 21);
       drawMiniGraph(24, 238, 773, 96);
     }
 
-    // 3D tube progress bar
+    // 3D tube progress bar (the client's red shades: 240/120/80,0,0; grey 127 outline)
     const x = 24, y = 354, w = 746, h = 36, dx = 12, dy = -12;
     const fw = w * wu.p;
     if (fw > 0.5) {
-      ctx.fillStyle = '#b0141e'; ctx.fillRect(x, y, fw, h);
-      ctx.fillStyle = '#e04048';
+      ctx.fillStyle = 'rgb(120,0,0)'; ctx.fillRect(x, y, fw, h);
+      ctx.fillStyle = 'rgb(240,0,0)';
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx, y + dy); ctx.lineTo(x + fw + dx, y + dy); ctx.lineTo(x + fw, y); ctx.fill();
-      ctx.fillStyle = '#6e0a10';
+      ctx.fillStyle = 'rgb(80,0,0)';
       ctx.beginPath(); ctx.moveTo(x + fw, y); ctx.lineTo(x + fw + dx, y + dy); ctx.lineTo(x + fw + dx, y + dy + h); ctx.lineTo(x + fw, y + h); ctx.fill();
     }
     ctx.strokeStyle = GREY; ctx.lineWidth = 2;
@@ -381,12 +416,11 @@
     ctx.moveTo(x + w, y); ctx.lineTo(x + w + dx, y + dy);
     ctx.stroke();
 
-    text(`Overall:  ${(wu.p * 100).toFixed(3)}% done`, 24, 418, 21);
-    const c = wu.cpu, hh = Math.floor(c / 3600), mm = Math.floor(c / 60) % 60, ss = (c % 60).toFixed(1).padStart(4, '0');
-    text(`CPU time: ${hh} hr ${pad(mm)} min ${ss} sec`, 747, 418, 21, WHITE, 'right');
+    text(`Overall: ${fmt(wu.p * 100, 6, 3)}% done`, 24, 418, 21);
+    text(`CPU time: ${hms(wu.cpu)}`, 747, 418, 21, WHITE, 'right');
   }
 
-  // Stepped "ribbon" graph, each series normalised to its own maximum (as in gutil.cpp).
+  // Stepped graph, normalised to its own maximum.
   function ribbon(data, x, y, w, h, color) {
     let max = 0;
     for (const v of data) max = Math.max(max, v);
@@ -422,11 +456,12 @@
   }
 
   // ---------- Data Info / User Info ----------
+  const p2 = (v) => String(v).padStart(2), p3 = (v) => String(v).padStart(3);
   function drawDataInfo() {
     text('Data Info', 1165, 140, 22, WHITE, 'center');
     const raH = Math.floor(wu.ra), raM = Math.floor((wu.ra - raH) * 60), raS = Math.floor(((wu.ra - raH) * 60 - raM) * 60);
     const ad = Math.abs(wu.dec), dD = Math.floor(ad), dM = Math.floor((ad - dD) * 60), dS = Math.floor(((ad - dD) * 60 - dM) * 60);
-    text(`From: ${raH} hr ${String(raM).padStart(2)}' ${String(raS).padStart(2)}" RA, ${wu.dec < 0 ? '-' : '+'} ${dD} deg ${dM}' ${dS}" Dec`, 906, 167, 21);
+    text(`From: ${p2(raH)} hr ${p2(raM)}' ${p2(raS)}" RA, +${p3(dD)} deg ${p2(dM)}' ${p2(dS)}" Dec`, 906, 167, 21);
     const d = wu.recorded;
     text(`Recorded on: ${DAYS[d.getUTCDay()]} ${MONS[d.getUTCMonth()]} ${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} ${d.getUTCFullYear()} GMT`, 906, 195, 21);
     text('Source: Arecibo Radio Observatory', 906, 223, 21);
@@ -437,143 +472,106 @@
     text('User Info', 1163, 323, 22, WHITE, 'center');
     text(`Name: ${user.name.slice(0, 34)}`, 906, 351, 21);
     text(`Data units completed: ${user.wus}`, 906, 379, 21);
-    const c = user.cpu, hh = Math.floor(c / 3600), mm = Math.floor(c / 60) % 60, ss = (c % 60).toFixed(1).padStart(4, '0');
-    text(`Total computer time: ${hh} hr ${pad(mm)} min ${ss} sec`, 906, 407, 21);
+    text(`Total computer time: ${hms(user.cpu)}`, 906, 407, 21);
   }
 
-  // ---------- the 3D power / frequency / time graph ----------
-  // At rest it matches the classic view: front edge (232..1400, 848), depth running up-left
-  // to (118..1286, 570). It rocks left/right like a turntable (the GPL client's "roll":
-  // roll_range degrees over roll_period seconds). Rotation happens in the floor plane, then
-  // the same oblique projection is applied, so at 0 degrees it is identical to the classic.
-  const ASP = 1.75;                          // floor width : depth (the GPL client used 7 x 4)
-  const AX = 1168 / ASP, BX = -114, BY = -278, MAXH = 92;
-  const DEPTH_U = -BX * ASP / 1168;          // view-depth weight of u' for painter sorting
-  const P = { cx: 232 + 1168 / 2 + BX / 2, cy: 848 + BY / 2, k: 1, c: 1, s: 0 };
-  let fitFor = -1;
+  // ---------- the 3D power / frequency / time graph: pixel renderer ----------
+  // Drawn exactly as the 3.08 client did it, at its own resolution (a 750x206 panel at the
+  // bottom of a 753x444 window), then scaled up without smoothing. For every row, each pixel
+  // column is a vertical line coloured HLS(hue = 0.5 + 0.5*(ncols-col)/ncols,
+  // lightness = 0.2 + 0.6*h/maxH, saturation 1); where the neighbour on the open side is
+  // taller a black line fills the step, otherwise one black pixel caps the column.
+  const PANEL_Y = 238, SCALE = VW / 753;
+  const pcan = document.createElement('canvas'); pcan.width = PW; pcan.height = PH;
+  const pctx = pcan.getContext('2d');
+  const pimg = pctx.createImageData(PW, PH);
+  const pbuf = new Uint32Array(pimg.data.buffer);
+  const BLACK32 = 0xff000000, GREY32 = 0xff7f7f7f;
+  const rgb32 = (r, g, b) => (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
+  let drawnGen = -1, drawnRows = 0;
 
-  function fitScale() {
-    // shrink just enough that the rocking graph never leaves its area
-    if (fitFor === cfg.rockDegrees) return;
-    fitFor = cfg.rockDegrees;
-    let k = 1;
-    for (let a = -1; a <= 1; a += 0.25) {
-      const th = a * cfg.rockDegrees * Math.PI / 180, c = Math.cos(th), sn = Math.sin(th);
-      for (const x of [0, 1]) for (const z of [0, 1]) for (const y of [0, MAXH]) {
-        const u = (x - 0.5) * ASP, v = z - 0.5, u2 = u * c + v * sn, v2 = -u * sn + v * c;
-        const dx = u2 * AX + BX * v2, dy = BY * v2 - y;
-        if (dx < 0) k = Math.min(k, (P.cx - 112) / -dx); else if (dx > 0) k = Math.min(k, (1405 - P.cx) / dx);
-        if (dy < 0) k = Math.min(k, (P.cy - 452) / -dy); else if (dy > 0) k = Math.min(k, (878 - P.cy) / dy);
-      }
-    }
-    P.k = k;
-  }
-
-  function setAngle(th) { P.c = Math.cos(th); P.s = Math.sin(th); }
-  function projX(u2, v2) { return P.cx + P.k * (u2 * AX + BX * v2); }
-  function projY(v2, y) { return P.cy + P.k * (BY * v2 - y); }
-
-  const NP = (NF + 1) * (NT + 1);
-  const gx = new Float32Array(NP), gy = new Float32Array(NP), gkey = new Float32Array(NP);
-  const order = [];
-  for (let t = 0; t < NT; t++) for (let i = 0; i < NF; i++) order.push(t * NF + i);
-  const barKey = new Float32Array(NT * NF);
-
-  function drawBars(g) {
-    // project the floor grid once
-    for (let t = 0; t <= NT; t++) {
-      const v = t / NT - 0.5;
-      for (let i = 0; i <= NF; i++) {
-        const u = (i / NF - 0.5) * ASP, u2 = u * P.c + v * P.s, v2 = -u * P.s + v * P.c, n = t * (NF + 1) + i;
-        gx[n] = projX(u2, v2); gy[n] = projY(v2, 0); gkey[n] = DEPTH_U * u2 + v2;
-      }
-    }
-    for (let t = 0; t < NT; t++) for (let i = 0; i < NF; i++) {
-      const n = t * (NF + 1) + i;
-      barKey[t * NF + i] = (gkey[n] + gkey[n + NF + 2]) / 2;
-    }
-    order.sort((a, b) => barKey[b] - barKey[a]);           // farthest first
-
-    const vis = graph.shown < 0 ? NT : graph.shown, span = (graph.max - graph.min) || 1;
-    const k = P.k;
-    g.lineWidth = 1; g.strokeStyle = '#000'; g.lineJoin = 'miter';
-    for (const id of order) {
-      const t = (id / NF) | 0, i = id - t * NF;
-      if (t < NT - vis) continue;                          // grows in from the back
-      const v = graph.rows[NT - 1 - t][i];
-      const hgt = Math.min(MAXH * 1.25, 4 + v * 30) * k;
-      const c = COLS[i][Math.min(LEVELS - 1, Math.round((v - graph.min) / span * (LEVELS - 1)))];
-      const a = t * (NF + 1) + i, b = a + 1, d = a + NF + 1, e = d + 1;   // a=front-left b=front-right d=back-left e=back-right
-      // side face: whichever side the depth runs towards
-      g.fillStyle = c.side; g.beginPath();
-      if (gx[d] < gx[a]) { g.moveTo(gx[a], gy[a]); g.lineTo(gx[d], gy[d]); g.lineTo(gx[d], gy[d] - hgt); g.lineTo(gx[a], gy[a] - hgt); }
-      else { g.moveTo(gx[b], gy[b]); g.lineTo(gx[e], gy[e]); g.lineTo(gx[e], gy[e] - hgt); g.lineTo(gx[b], gy[b] - hgt); }
-      g.fill();
-      // top
-      g.fillStyle = c.top; g.beginPath();
-      g.moveTo(gx[a], gy[a] - hgt); g.lineTo(gx[b], gy[b] - hgt); g.lineTo(gx[e], gy[e] - hgt); g.lineTo(gx[d], gy[d] - hgt); g.closePath();
-      g.fill(); g.stroke();
-      // front
-      g.fillStyle = c.front; g.beginPath();
-      g.moveTo(gx[a], gy[a]); g.lineTo(gx[b], gy[b]); g.lineTo(gx[b], gy[b] - hgt); g.lineTo(gx[a], gy[a] - hgt); g.closePath();
-      g.fill(); g.stroke();
+  function put(x, y, c) { if (x >= 0 && x < PW && y >= 0 && y < PH) pbuf[y * PW + x] = c; }
+  function pline(x0, y0, x1, y1, c) {
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    for (;;) {
+      put(x0, y0, c);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
     }
   }
 
-  // corner of the graph box: x,z in 0..1, y = height in px
-  function corner(x, z, y) {
-    const u = (x - 0.5) * ASP, v = z - 0.5, u2 = u * P.c + v * P.s, v2 = -u * P.s + v * P.c;
-    return [projX(u2, v2), projY(v2, y * P.k)];
+  function graphCorners() {
+    const { flag, dx, dy, ncols, maxH } = cg;
+    const fx = flag ? MARG : MARG + dx, bx = flag ? MARG + dx : MARG;
+    return {
+      FL: [fx - 2, BASE + 1], FR: [fx + ncols, BASE + 1],
+      BL: [bx - 2, BASE - dy], BR: [bx + ncols, BASE - dy], maxH,
+    };
   }
 
-  const graphCanvas = document.createElement('canvas');
-  const gctx = graphCanvas.getContext('2d');
-  let graphScale = 0, graphDrawnAt = -1, graphAngle = NaN;
-
-  function renderGraphLayer(scale) {
-    const w = Math.ceil(VW * scale), h = Math.ceil((VH - 455) * scale);
-    if (graphCanvas.width !== w || graphCanvas.height !== h) { graphCanvas.width = w; graphCanvas.height = h; }
-    const g = gctx;
-    g.setTransform(scale, 0, 0, scale, 0, -455 * scale);
-    g.clearRect(0, 455, VW, VH);
-    drawBars(g);
-    // box outline (thin grey), drawn over the bars like the original
-    const p = (x, z, y) => corner(x, z, y);
-    const fl = p(0, 0, 0), bl = p(0, 1, 0), blT = p(0, 1, MAXH), brT = p(1, 1, MAXH), frT = p(1, 0, MAXH), fr = p(1, 0, 0);
-    g.strokeStyle = '#8c8c8c'; g.lineWidth = 1.5;
-    g.beginPath();
-    g.moveTo(...bl); g.lineTo(...fl);
-    g.moveTo(...bl); g.lineTo(...blT); g.lineTo(...brT); g.lineTo(...frT); g.lineTo(...fr);
-    g.moveTo(...fl); g.lineTo(...fr);
-    g.stroke();
+  function drawBox() {
+    const { FL, FR, BL, BR, maxH } = graphCorners();
+    const L = (a, b) => pline(a[0], a[1], b[0], b[1], GREY32);
+    const up = (p) => [p[0], p[1] - maxH];
+    L(FL, FR); L(FL, BL); L(BL, BR); L(FR, BR);                 // floor
+    L(BL, up(BL)); L(BR, up(BR)); L(up(BL), up(BR));            // back wall
+    if (cg.flag) { L(FL, up(FL)); L(up(FL), up(BL)); }          // open side posts + top edge
+    else { L(FR, up(FR)); L(up(FR), up(BR)); }
   }
 
-  function drawGraph(scale) {
-    fitScale();
-    const th = cfg.rockDegrees ? Math.sin(2 * Math.PI * clock / cfg.rockSeconds) * cfg.rockDegrees * Math.PI / 180 : 0;
-    const now = performance.now();
-    const moved = Math.abs(th - graphAngle) > 0.0007 && now - graphDrawnAt > 50;  // rock redraw: small steps, <= 20 fps
-    if (graphDirty || moved || scale !== graphScale) {
-      setAngle(th); graphAngle = th;
-      renderGraphLayer(scale); graphDirty = false; graphScale = scale; graphDrawnAt = now;
+  function drawRow(r) {
+    const { flag, dx, dy, n, ncols, maxH } = cg;
+    const h = cg.rows[r];
+    const xs = Math.trunc(flag ? dx * (n - r - 1) / n : dx * r / n);
+    const ys = Math.trunc(dy * (n - r - 1) / n);
+    for (let c = 0; c < ncols; c++) {
+      const hc = h[c], x = MARG + xs + c;
+      const [R, G, B] = hlsToRgb(0.5 + 0.5 * (ncols - c) / ncols, 0.2 + 0.6 * hc / maxH, 1);
+      const col = rgb32(R, G, B);
+      for (let y = ys; y < ys + hc; y++) put(x, BASE - y, col);
+      const nb = flag ? c + 1 : c - 1;
+      if (nb >= 0 && nb < ncols && h[nb] > hc) { for (let y = ys + hc; y < ys + h[nb]; y++) put(x, BASE - y, BLACK32); }
+      else put(x, BASE - (ys + hc), BLACK32);
     }
-    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const m = view;
-    ctx.drawImage(graphCanvas, m.ox, m.oy + 455 * m.s, graphCanvas.width * (m.s / scale), graphCanvas.height * (m.s / scale));
+  }
+
+  function updatePanel() {
+    let changed = false;
+    if (drawnGen !== cg.gen) {
+      pbuf.fill(BLACK32); drawBox(); drawnGen = cg.gen; drawnRows = 0; changed = true;
+    }
+    while (drawnRows < cg.emitted) { drawRow(drawnRows++); changed = true; }
+    if (changed) pctx.putImageData(pimg, 0, 0);
+  }
+
+  const toV = (px, py) => [px * SCALE, (PANEL_Y + py) * SCALE];
+
+  function drawGraph() {
+    updatePanel();
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(pcan, 0, PANEL_Y * SCALE, PW * SCALE, PH * SCALE);
     ctx.restore();
 
-    // axis labels ride along with the box corners
-    const fl = corner(0, 0, 0), bl = corner(0, 1, 0), fr = corner(1, 0, 0), fm = corner(0.5, 0, 0), lm = corner(0, 0.5, 0);
-    text(WU_TIME.toFixed(1), bl[0] - 23, bl[1] + 14, 21, WHITE, 'right');
-    text('Time (sec)', lm[0] - 26, lm[1] + 7, 21, WHITE, 'right');
-    text('0', fl[0] - 30, fl[1] - 6, 21, WHITE, 'right');
-    const below = (y) => Math.min(y + 27, 880);                 // keep labels on screen at the rock extremes
-    text('0.0', fl[0] + 13, below(fl[1]), 21);
-    text('Frequency (Hz)', fm[0] + 26, below(fm[1]), 21, WHITE, 'center');
-    text((BANDWIDTH - 0.005).toFixed(3), fr[0] + 7, below(fr[1]), 21, WHITE, 'right');
-    text('Power', 1449, 826, 21, WHITE, 'center');
+    // labels (the client: "%5.1f" for the time span, "%5.3f" for the bandwidth)
+    const { FL, FR, BL, BR } = graphCorners();
+    const below = BASE + 14;
+    let [x, y] = toV(FL[0] + 6, below); text('0.0', x, y, 21);
+    [x, y] = toV((FL[0] + FR[0]) / 2 + 13, below); text('Frequency (Hz)', x, y, 21, WHITE, 'center');
+    [x, y] = toV(FR[0] + 3, below); text(fmt(BANDWIDTH - 0.005, 5, 3), x, y, 21, WHITE, 'right');
+    const side = cg.flag ? 1 : -1;                          // time labels on the leaning side
+    const back = cg.flag ? BR : BL, front = cg.flag ? FR : FL, align = cg.flag ? 'left' : 'right';
+    [x, y] = toV(back[0] + side * 12, back[1] + 7); text(fmt(WU_TIME, 5, 1).trim(), x, y, 21, WHITE, align);
+    [x, y] = toV((back[0] + front[0]) / 2 + side * 13, (back[1] + front[1]) / 2 + 3); text('Time (sec)', x, y, 21, WHITE, align);
+    [x, y] = toV(front[0] + side * 15, front[1] - 3); text('0', x, y, 21, WHITE, align);
+    const px = cg.flag ? 23 : PW - 23;                      // "Power" arrow on the other side
+    [x, y] = toV(px, 177); text('Power', x, y, 21, WHITE, 'center');
+    const [ax, ay0] = toV(px, 163), [, ay1] = toV(px, 127);
     ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(1449, 800); ctx.lineTo(1449, 728); ctx.moveTo(1440, 740); ctx.lineTo(1449, 728); ctx.lineTo(1458, 740); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ax, ay0); ctx.lineTo(ax, ay1); ctx.moveTo(ax - 9, ay1 + 12); ctx.lineTo(ax, ay1); ctx.lineTo(ax + 9, ay1 + 12); ctx.stroke();
   }
 
   // ---------- F1 info box ----------
@@ -617,7 +615,7 @@
     drawAnalysis();
     drawDataInfo();
     drawUserInfo();
-    drawGraph(s);
+    drawGraph();
     drawInfo();
   }
 
@@ -704,8 +702,6 @@
     growSeconds: ['Graph grow time', 's'],
     holdSeconds: ['Graph hold time', 's'],
     signalSeconds: ['Signal display time', 's'],
-    rockSeconds: ['Graph rock period (left-right-left)', 's'],
-    rockDegrees: ['Graph rock angle (0 = off)', '\u00b0'],
   };
   const dlg = document.getElementById('settings');
   const rowsEl = document.getElementById('settingsRows');
@@ -724,8 +720,20 @@
       onSettingsChanged(key);
     });
   }
+  // graph angle: how each new 3D graph is viewed
+  const angleRow = document.createElement('div'); angleRow.className = 'row';
+  angleRow.innerHTML = `<label for="set-graphAngle">Graph angle</label>
+    <select id="set-graphAngle" style="grid-column:1/3;background:#000a28;color:#fff;border:1px solid #3d5aa0;padding:5px;border-radius:3px;font:inherit">
+      <option value="classic">Classic: random lean for each new graph (as 3.08 did)</option>
+      <option value="rock">Rock: lean sweeps slowly left and right, graph by graph</option>
+      <option value="fixed">Fixed: always the v3.07 screenshot angle</option>
+    </select>`;
+  rowsEl.appendChild(angleRow);
+  const angleSel = angleRow.querySelector('select');
+  angleSel.addEventListener('change', () => { cfg.graphAngle = angleSel.value; onSettingsChanged('graphAngle'); });
   function syncSettingsForm() {
     for (const [key, { input, out, unit }] of Object.entries(inputs)) { input.value = cfg[key]; out.textContent = cfg[key] + (unit === '\u00b0' ? '' : ' ') + unit; }
+    angleSel.value = cfg.graphAngle;
   }
   function onSettingsChanged(key) {
     const save = {};
@@ -734,7 +742,7 @@
     if (key === 'wuMinutes' || key === 'stepSeconds') {
       wu.slots = Math.max(6, Math.round(cfg.wuMinutes * 60 / cfg.stepSeconds));
     }
-    graphDirty = true;
+    if (key === 'graphAngle') cg.start = -1e9;              // show the new angle straight away
   }
   function openSettings() { syncSettingsForm(); if (!dlg.open) dlg.showModal(); }
   document.getElementById('settingsBtn').addEventListener('click', openSettings);
@@ -793,5 +801,5 @@
   poke();
 
   // pre-fill the graph so the first frame isn't empty
-  newGraphArray(1024); graph.start = -cfg.growSeconds;
+  newGraph(1024); cg.start = -cfg.growSeconds; while (cg.emitted < cg.n) emitRow();
 })();

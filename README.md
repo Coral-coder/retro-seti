@@ -10,23 +10,33 @@ globe/wave logo and dish are redrawn, not copied from the original.
 
 ### How closely it follows the original
 
-- **Layout and palette** are measured from screenshots of the classic v3.07 client.
-- **Behaviour** follows Berkeley's GPL-licensed SETI@home graphics code (`seti_boinc`,
-  `sah_gfx.cpp`, and BOINC's `reduce_lib.cpp` / `gutil.cpp`), which descends from the classic client:
-  - status strings: *Doing Baseline Smoothing*, *Chirping data*, *Computing Fast Fourier
-    Transform*, *Searching for Gaussians*, *Searching for Pulses / Triplets*
-  - signal readouts in the client's own `printf` formats, e.g. `Pulse: power %5.2f, period %6.4f, score %5.2f`
-  - new signals show at once; otherwise the best Gaussian, pulse and triplet rotate every 5 s
-    (red stepped "ribbon" graphs, a white fitted curve for Gaussians, green ticks for triplets)
-  - the 3D graph swaps in a new data array: it grows row by row, then holds (the GPL defaults were
-    3 s / 2 s; ours default to a calmer 6 s / 4 s and are adjustable)
-  - the graph rocks left and right like a turntable, as the GPL client's "roll" did
-    (it used ±30° over 30 s; we default to ±6° over 40 s to keep the classic framing)
-  - bar colour is HLS: the hue sweeps across frequency, and lightness is `0.5 + h/2` with `h`
-    normalised to the array's min/max, so the tallest bars wash out to white
-- The classic 3.x client's own source was never released under an open licence, so it was not
-  disassembled or copied. No source or documentation shows any sound, so the screensaver is
-  silent, as the original appears to have been.
+Behaviour, formats and colours come from studying Berkeley's original **SETI@home 3.08
+Windows client** (from the Internet Archive's "UC Berkeley SETI@home classic clients"
+collection). It was taken apart and read, never run, and none of its code or artwork is copied:
+
+- **3D graph:** drawn the way 3.08 drew it, at its own resolution (a 750×206 panel) and
+  scaled up without smoothing. Each row is a run of 1-pixel vertical lines coloured with HLS
+  (hue = 0.5 + 0.5·(ncols−col)/ncols, lightness = 0.2 + 0.6·height/maxHeight, saturation 1).
+  Black fills the steps where the neighbouring column is taller; otherwise one black pixel
+  caps each column.
+- **Viewpoint:** every new graph gets a random lean (left or right) and steepness:
+  dx = 50–119 px, dy = 200 − dx, one row per pixel of depth.
+- **Graph data:** FFT bins are max-reduced onto the columns, or stretched when the FFT is
+  shorter than the width, which gives the blocky look at low resolution. Each row is scaled
+  linearly against the largest value seen so far in the graph, and rows appear back to front
+  as the analysis produces them.
+- **Text:** the client's own formats, e.g. `Doppler drift rate: %6.4f Hz/sec    Resolution: %5.3f Hz`,
+  `%sGaussian: power %5.2f, fit %5.3f`, `Best Triplet: power %5.2f, period %6.4f`,
+  `Overall: %6.3f%% done`, `%2d hr %2d' %2d" RA`, `+%3d deg %2d' %2d" Dec`.
+- **Status lines:** *Doing Baseline Smoothing*, *Chirping data*, *Computing Fast Fourier
+  Transform*, *Searching for Gaussians*, *Searching for Pulses / Triplets*, then
+  *Sending result - connecting to server.*, *Sending data: nK*, *All data sent.*,
+  *Getting data - connecting to server.*, *Receiving data: nK* and *All data received.*
+- **Small graph:** blank until something interesting turns up. During a search it shows
+  the candidate being examined, otherwise the best so far ("Best ...").
+- **Colours:** purple frame 153,102,255; graph line pure red; grey 127; progress-bar reds
+  240/120/80.
+- **Sound:** the 3.08 client imports no audio APIs at all, so it was silent, and so is this.
 
 ### Custom title logo
 
@@ -50,7 +60,8 @@ A wide PNG with a transparent or black background looks best.
   when the tab is hidden and the page re-takes it when you come back.
 - **F1**: info box · **S**: Settings · **F** or double-click: fullscreen · **N**: set your name · **L**: upload a logo
 - **Settings** window: data unit length, analysis step, graph grow/hold time, signal display time,
-  and the 3D graph's rocking period and angle (defaults: 15 min, 20 s, 6 s / 4 s, 8 s, 40 s, ±6°)
+  and the graph angle: *Classic* (a random lean for each graph, as 3.08 did), *Rock* (the lean
+  sweeps slowly left and right, graph by graph) or *Fixed*
 - URL options: `?name=Your+Name`, `?wu=15` (minutes per data unit)
 - Work units completed and total CPU time are remembered in `localStorage`.
 
@@ -91,8 +102,8 @@ copy build\RetroSETI.exe RetroSETI.scr
 
 ## License
 
-GPL-2.0-or-later (see `LICENSE`), because the behaviour and formulas follow Berkeley's
-GPL-licensed SETI@home graphics code.
+GPL-2.0-or-later (see `LICENSE`). Parts of the behaviour follow Berkeley's GPL-licensed
+SETI@home/BOINC graphics code.
 
 ---
 Not affiliated with UC Berkeley or the SETI@home project.
