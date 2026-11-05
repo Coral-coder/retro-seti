@@ -18,7 +18,10 @@ globe/wave logo and dish are redrawn, not copied from the original.
   - signal readouts in the client's own `printf` formats, e.g. `Pulse: power %5.2f, period %6.4f, score %5.2f`
   - new signals show at once; otherwise the best Gaussian, pulse and triplet rotate every 5 s
     (red stepped "ribbon" graphs, a white fitted curve for Gaussians, green ticks for triplets)
-  - the 3D graph swaps in a new data array every 5 s: it grows row by row for 3 s, then holds for 2 s
+  - the 3D graph swaps in a new data array: it grows row by row, then holds (the GPL defaults were
+    3 s / 2 s; ours default to a calmer 6 s / 4 s and are adjustable)
+  - the graph rocks left and right like a turntable, as the GPL client's "roll" did
+    (it used ±30° over 30 s; we default to ±6° over 40 s to keep the classic framing)
   - bar colour is HLS: the hue sweeps across frequency, and lightness is `0.5 + h/2` with `h`
     normalised to the array's min/max, so the tallest bars wash out to white
 - The classic 3.x client's own source was never released under an open licence, so it was not
@@ -45,7 +48,9 @@ A wide PNG with a transparent or black background looks best.
 - **Keeps the display awake** using the Screen Wake Lock API (with a muted-video fallback for
   browsers without it). The *Display awake* button toggles it; the browser releases the lock
   when the tab is hidden and the page re-takes it when you come back.
-- **F1**: info box · **F** or double-click: fullscreen · **N**: set your name · **L**: upload a logo
+- **F1**: info box · **S**: Settings · **F** or double-click: fullscreen · **N**: set your name · **L**: upload a logo
+- **Settings** window: data unit length, analysis step, graph grow/hold time, signal display time,
+  and the 3D graph's rocking period and angle (defaults: 15 min, 20 s, 6 s / 4 s, 8 s, 40 s, ±6°)
 - URL options: `?name=Your+Name`, `?wu=15` (minutes per data unit)
 - Work units completed and total CPU time are remembered in `localStorage`.
 
@@ -66,7 +71,7 @@ Screen Saver Settings.
 | --- | --- |
 | `RetroSETI.scr /s` | Fullscreen on every monitor; mouse/keyboard exits |
 | `RetroSETI.scr /w` | Normal window (F11 / double-click = fullscreen, F1 = info) |
-| `RetroSETI.scr /c` | Settings: name, minutes per data unit, title logo, reset stats |
+| `RetroSETI.scr /c` | Settings: name, speeds (same as the web Settings window), title logo, reset stats |
 | `RetroSETI.scr /p <hwnd>` | Little preview in Screen Saver Settings |
 
 While running (`/s` or `/w`) it calls `SetThreadExecutionState(ES_DISPLAY_REQUIRED |

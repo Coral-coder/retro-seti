@@ -36,7 +36,6 @@ namespace RetroSeti
     {
         public const int NF = 128, NT = 48;
         public const double Bandwidth = 9765.625, WuTime = 107.374;
-        const double SlotSeconds = 12, GrowTime = 3, HoldTime = 2;
         const int GaussPotLen = 64, PulsePotLen = 256, TripletPotLen = 256;
         static readonly int[] Ffts = { 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072 };
         static readonly Random Rng = new Random();
@@ -69,7 +68,7 @@ namespace RetroSeti
             WuSeconds = Math.Max(0.5, Math.Min(600, Settings.WuMinutes)) * 60;
             Wu = NewWorkUnit();
             NewGraphArray(1024);
-            graphStart = Clock - GrowTime;
+            graphStart = Clock - Settings.GrowSeconds;
         }
 
         static WorkUnit NewWorkUnit() => new WorkUnit
@@ -77,7 +76,7 @@ namespace RetroSeti
             Ra = Rand(0, 24), Dec = Rand(-1.5, 38),
             Recorded = new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(Rand(0, 7 * 365.25 * 86400000.0)),
             BaseHz = 1418750000 + Rng.Next(256) * Bandwidth,
-            Slots = Math.Max(6, (int)Math.Round(WuSeconds / SlotSeconds)),
+            Slots = Math.Max(6, (int)Math.Round(WuSeconds / Settings.StepSeconds)),
         };
 
         public static SlotState State(double p)
@@ -163,10 +162,10 @@ namespace RetroSeti
 
         static void ChooseSignal()
         {
-            if (dirty != null) { Shown = dirty; dirty = null; shownUntil = Clock + 5; return; }
+            if (dirty != null) { Shown = dirty; dirty = null; shownUntil = Clock + Settings.SignalSeconds; return; }
             if (Clock < shownUntil) return;
             var choices = new[] { "gauss", "pulse", "triplet" }.Where(Wu.Best.ContainsKey).Select(k => Wu.Best[k]).ToArray();
-            Shown = choices.Length == 0 ? null : choices[(int)(Clock / 5) % choices.Length];
+            Shown = choices.Length == 0 ? null : choices[(int)(Clock / Settings.SignalSeconds) % choices.Length];
         }
 
         static string F(double v, int w, int p) => v.ToString("F" + p, CI).PadLeft(w);
@@ -189,9 +188,9 @@ namespace RetroSeti
                 Wu.Cpu += dt;
                 if (CountStats) Settings.Cpu += dt;
                 var st = State(Math.Min(Wu.P, 0.99999));
-                if (Clock - graphStart >= GrowTime + HoldTime) NewGraphArray(st.Fft);
+                if (Clock - graphStart >= Settings.GrowSeconds + Settings.HoldSeconds) NewGraphArray(st.Fft);
                 findAcc += dt;
-                if (findAcc > 1)
+                if (findAcc > Settings.StepSeconds / 10)
                 {
                     findAcc = 0;
                     if (st.Act == "Searching for Gaussians" && Rng.NextDouble() < 0.35) Found(MakeGauss());
@@ -212,7 +211,7 @@ namespace RetroSeti
 
             ChooseSignal();
             double e = Clock - graphStart;
-            int vis = e >= GrowTime ? NT : (int)Math.Floor(NT * e / GrowTime);
+            int vis = e >= Settings.GrowSeconds ? NT : (int)Math.Floor(NT * e / Settings.GrowSeconds);
             if (vis != GraphVisible) { GraphVisible = vis; GraphVersion++; }
 
             saveAcc += dt;

@@ -14,8 +14,20 @@
   const VW = 1500, VH = 885;            // virtual canvas (same aspect as the original 753x444)
   const NF = 128, NT = 48;              // frequency columns x time rows in the 3D graph
   const params = new URLSearchParams(location.search);
-  const WU_SECONDS = clamp(parseFloat(params.get('wu')) || 15, 0.5, 600) * 60;
-  const SLOT_SECONDS = 12;              // one (drift rate, FFT length) pass
+  // ---- user-adjustable speeds (Settings window, saved in this browser) ----
+  const DEFAULTS = {
+    wuMinutes: 15,      // length of one simulated data unit
+    stepSeconds: 20,    // one (drift rate, FFT length) analysis pass
+    growSeconds: 6,     // 3D graph: time to grow in row by row
+    holdSeconds: 4,     // 3D graph: time to hold before the next array
+    signalSeconds: 8,   // how long each best signal is shown before rotating
+    rockSeconds: 40,    // one full left-right-left rock of the 3D graph
+    rockDegrees: 6,     // how far it rocks each way (0 = still)
+  };
+  const LIMITS = {
+    wuMinutes: [1, 600, 1], stepSeconds: [5, 60, 1], growSeconds: [1, 20, 0.5], holdSeconds: [0, 20, 0.5],
+    signalSeconds: [2, 30, 1], rockSeconds: [10, 120, 1], rockDegrees: [0, 45, 1],
+  };
   const FFTS = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
   const BANDWIDTH = 9765.625;           // Hz per data unit
   const WU_TIME = 107.374;              // seconds of telescope data per data unit
@@ -43,6 +55,10 @@
     cpu: store.get('cpu', 0),
   };
   if (params.get('name')) store.set('name', user.name);
+
+  const cfg = Object.assign({}, DEFAULTS, store.get('settings', {}));
+  for (const k of Object.keys(LIMITS)) cfg[k] = clamp(+cfg[k] || DEFAULTS[k], LIMITS[k][0], LIMITS[k][1]);
+  if (params.get('wu')) cfg.wuMinutes = clamp(parseFloat(params.get('wu')) || 15, 0.5, 600);
 
   // ---------- graph colour (from Berkeley's GPL graphics code, reduce_lib.cpp) ----------
   // hue sweeps across frequency, saturation 1, lightness = 0.5 + h/2 where h is the bar's
@@ -79,7 +95,7 @@
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const GAUSS_POT_LEN = 64, PULSE_POT_LEN = 256, TRIPLET_POT_LEN = 256;
-  const GROW_TIME = 3, HOLD_TIME = 2;   // graph animation defaults from the GPL code
+  // graph grow/hold animation as in the GPL code (its defaults were 3 s / 2 s; ours are in cfg)
 
   function newWorkUnit() {
     return {
@@ -87,7 +103,7 @@
       recorded: new Date(Date.UTC(1999, 0, 1) + rand(0, 7 * 365.25 * 86400000)),
       base: 1418750000 + Math.floor(rand(0, 256)) * BANDWIDTH,
       p: 0, cpu: 0,
-      slots: Math.max(6, Math.round(WU_SECONDS / SLOT_SECONDS)),
+      slots: Math.max(6, Math.round(cfg.wuMinutes * 60 / cfg.stepSeconds)),
       best: { gauss: null, pulse: null, triplet: null },
     };
   }
@@ -137,7 +153,7 @@
   }
   function graphRowsVisible() {
     const e = clock - graph.start;
-    return e >= GROW_TIME ? NT : Math.floor(NT * e / GROW_TIME);
+    return e >= cfg.growSeconds ? NT : Math.floor(NT * e / cfg.growSeconds);
   }
 
   // ---- signals: new ones show immediately, otherwise rotate the bests every 5 s ----
@@ -172,11 +188,11 @@
     signal.dirty = s;
   }
   function chooseSignal() {
-    if (signal.dirty) { signal.shown = signal.dirty; signal.dirty = null; signal.until = clock + 5; return; }
+    if (signal.dirty) { signal.shown = signal.dirty; signal.dirty = null; signal.until = clock + cfg.signalSeconds; return; }
     if (signal.until && clock < signal.until) return;
     const choices = ['gauss', 'pulse', 'triplet'].map((k) => wu.best[k]).filter(Boolean);
     if (!choices.length) { signal.shown = null; return; }
-    signal.shown = choices[Math.floor((clock / 5) % choices.length)];
+    signal.shown = choices[Math.floor((clock / cfg.signalSeconds) % choices.length)];
   }
   function signalText(s) {
     if (!s) return '';
@@ -191,14 +207,14 @@
     clock += dt;
     phaseT += dt;
     if (phase === 'analyze') {
-      wu.p += dt / WU_SECONDS;
+      wu.p += dt / (cfg.wuMinutes * 60);
       wu.cpu += dt;
       user.cpu += dt;
       const st = slotState(Math.min(wu.p, 0.99999));
-      if (clock - graph.start >= GROW_TIME + HOLD_TIME) newGraphArray(st.fft);
+      if (clock - graph.start >= cfg.growSeconds + cfg.holdSeconds) newGraphArray(st.fft);
       // candidate signals turn up while their search is running
       findAcc += dt;
-      if (findAcc > 1) {
+      if (findAcc > cfg.stepSeconds / 10) {
         findAcc = 0;
         if (st.act === 'Searching for Gaussians' && Math.random() < 0.35) foundSignal(makeGauss());
         if (st.act === 'Searching for Pulses / Triplets') {
@@ -426,11 +442,93 @@
   }
 
   // ---------- the 3D power / frequency / time graph ----------
-  // Floor: front edge (232..1400, 848), depth runs up-left to (118..1286, 570).
-  const G = { fx: 232, fy: 848, fw: 1168, ddx: -114 / NT, ddy: -278 / NT, maxH: 92 };
+  // At rest it matches the classic view: front edge (232..1400, 848), depth running up-left
+  // to (118..1286, 570). It rocks left/right like a turntable (the GPL client's "roll":
+  // roll_range degrees over roll_period seconds). Rotation happens in the floor plane, then
+  // the same oblique projection is applied, so at 0 degrees it is identical to the classic.
+  const ASP = 1.75;                          // floor width : depth (the GPL client used 7 x 4)
+  const AX = 1168 / ASP, BX = -114, BY = -278, MAXH = 92;
+  const DEPTH_U = -BX * ASP / 1168;          // view-depth weight of u' for painter sorting
+  const P = { cx: 232 + 1168 / 2 + BX / 2, cy: 848 + BY / 2, k: 1, c: 1, s: 0 };
+  let fitFor = -1;
+
+  function fitScale() {
+    // shrink just enough that the rocking graph never leaves its area
+    if (fitFor === cfg.rockDegrees) return;
+    fitFor = cfg.rockDegrees;
+    let k = 1;
+    for (let a = -1; a <= 1; a += 0.25) {
+      const th = a * cfg.rockDegrees * Math.PI / 180, c = Math.cos(th), sn = Math.sin(th);
+      for (const x of [0, 1]) for (const z of [0, 1]) for (const y of [0, MAXH]) {
+        const u = (x - 0.5) * ASP, v = z - 0.5, u2 = u * c + v * sn, v2 = -u * sn + v * c;
+        const dx = u2 * AX + BX * v2, dy = BY * v2 - y;
+        if (dx < 0) k = Math.min(k, (P.cx - 112) / -dx); else if (dx > 0) k = Math.min(k, (1405 - P.cx) / dx);
+        if (dy < 0) k = Math.min(k, (P.cy - 452) / -dy); else if (dy > 0) k = Math.min(k, (878 - P.cy) / dy);
+      }
+    }
+    P.k = k;
+  }
+
+  function setAngle(th) { P.c = Math.cos(th); P.s = Math.sin(th); }
+  function projX(u2, v2) { return P.cx + P.k * (u2 * AX + BX * v2); }
+  function projY(v2, y) { return P.cy + P.k * (BY * v2 - y); }
+
+  const NP = (NF + 1) * (NT + 1);
+  const gx = new Float32Array(NP), gy = new Float32Array(NP), gkey = new Float32Array(NP);
+  const order = [];
+  for (let t = 0; t < NT; t++) for (let i = 0; i < NF; i++) order.push(t * NF + i);
+  const barKey = new Float32Array(NT * NF);
+
+  function drawBars(g) {
+    // project the floor grid once
+    for (let t = 0; t <= NT; t++) {
+      const v = t / NT - 0.5;
+      for (let i = 0; i <= NF; i++) {
+        const u = (i / NF - 0.5) * ASP, u2 = u * P.c + v * P.s, v2 = -u * P.s + v * P.c, n = t * (NF + 1) + i;
+        gx[n] = projX(u2, v2); gy[n] = projY(v2, 0); gkey[n] = DEPTH_U * u2 + v2;
+      }
+    }
+    for (let t = 0; t < NT; t++) for (let i = 0; i < NF; i++) {
+      const n = t * (NF + 1) + i;
+      barKey[t * NF + i] = (gkey[n] + gkey[n + NF + 2]) / 2;
+    }
+    order.sort((a, b) => barKey[b] - barKey[a]);           // farthest first
+
+    const vis = graph.shown < 0 ? NT : graph.shown, span = (graph.max - graph.min) || 1;
+    const k = P.k;
+    g.lineWidth = 1; g.strokeStyle = '#000'; g.lineJoin = 'miter';
+    for (const id of order) {
+      const t = (id / NF) | 0, i = id - t * NF;
+      if (t < NT - vis) continue;                          // grows in from the back
+      const v = graph.rows[NT - 1 - t][i];
+      const hgt = Math.min(MAXH * 1.25, 4 + v * 30) * k;
+      const c = COLS[i][Math.min(LEVELS - 1, Math.round((v - graph.min) / span * (LEVELS - 1)))];
+      const a = t * (NF + 1) + i, b = a + 1, d = a + NF + 1, e = d + 1;   // a=front-left b=front-right d=back-left e=back-right
+      // side face: whichever side the depth runs towards
+      g.fillStyle = c.side; g.beginPath();
+      if (gx[d] < gx[a]) { g.moveTo(gx[a], gy[a]); g.lineTo(gx[d], gy[d]); g.lineTo(gx[d], gy[d] - hgt); g.lineTo(gx[a], gy[a] - hgt); }
+      else { g.moveTo(gx[b], gy[b]); g.lineTo(gx[e], gy[e]); g.lineTo(gx[e], gy[e] - hgt); g.lineTo(gx[b], gy[b] - hgt); }
+      g.fill();
+      // top
+      g.fillStyle = c.top; g.beginPath();
+      g.moveTo(gx[a], gy[a] - hgt); g.lineTo(gx[b], gy[b] - hgt); g.lineTo(gx[e], gy[e] - hgt); g.lineTo(gx[d], gy[d] - hgt); g.closePath();
+      g.fill(); g.stroke();
+      // front
+      g.fillStyle = c.front; g.beginPath();
+      g.moveTo(gx[a], gy[a]); g.lineTo(gx[b], gy[b]); g.lineTo(gx[b], gy[b] - hgt); g.lineTo(gx[a], gy[a] - hgt); g.closePath();
+      g.fill(); g.stroke();
+    }
+  }
+
+  // corner of the graph box: x,z in 0..1, y = height in px
+  function corner(x, z, y) {
+    const u = (x - 0.5) * ASP, v = z - 0.5, u2 = u * P.c + v * P.s, v2 = -u * P.s + v * P.c;
+    return [projX(u2, v2), projY(v2, y * P.k)];
+  }
+
   const graphCanvas = document.createElement('canvas');
   const gctx = graphCanvas.getContext('2d');
-  let graphScale = 0;
+  let graphScale = 0, graphDrawnAt = -1, graphAngle = NaN;
 
   function renderGraphLayer(scale) {
     const w = Math.ceil(VW * scale), h = Math.ceil((VH - 455) * scale);
@@ -438,65 +536,44 @@
     const g = gctx;
     g.setTransform(scale, 0, 0, scale, 0, -455 * scale);
     g.clearRect(0, 455, VW, VH);
-    const cw = G.fw / NF, { ddx, ddy, maxH } = G;
-    g.lineWidth = 1; g.strokeStyle = '#000'; g.lineJoin = 'miter';
-
-    // back to front; within a row right to left (left side faces are the visible ones)
-    const vis = graph.shown < 0 ? NT : graph.shown, span = (graph.max - graph.min) || 1;
-    for (let t = NT - 1; t >= NT - vis; t--) {
-      const row = graph.rows[NT - 1 - t];
-      const ox = G.fx + t * ddx, oy = G.fy + t * ddy;
-      for (let i = NF - 1; i >= 0; i--) {
-        const v = row[i];
-        const hgt = Math.min(maxH * 1.25, 4 + v * 30);
-        const lv = Math.min(LEVELS - 1, Math.round((v - graph.min) / span * (LEVELS - 1)));
-        const c = COLS[i][lv];
-        const x = ox + i * cw, y = oy;
-        // left side
-        g.fillStyle = c.side;
-        g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - hgt); g.lineTo(x + ddx, y - hgt + ddy); g.lineTo(x + ddx, y + ddy); g.closePath(); g.fill();
-        // top
-        g.fillStyle = c.top;
-        g.beginPath(); g.moveTo(x, y - hgt); g.lineTo(x + cw, y - hgt); g.lineTo(x + cw + ddx, y - hgt + ddy); g.lineTo(x + ddx, y - hgt + ddy); g.closePath(); g.fill(); g.stroke();
-        // front
-        g.fillStyle = c.front;
-        g.fillRect(x, y - hgt, cw, hgt);
-        g.strokeRect(x, y - hgt, cw, hgt);
-      }
-    }
-
+    drawBars(g);
     // box outline (thin grey), drawn over the bars like the original
-    const bx = G.fx + NT * ddx, by = G.fy + NT * ddy;
+    const p = (x, z, y) => corner(x, z, y);
+    const fl = p(0, 0, 0), bl = p(0, 1, 0), blT = p(0, 1, MAXH), brT = p(1, 1, MAXH), frT = p(1, 0, MAXH), fr = p(1, 0, 0);
     g.strokeStyle = '#8c8c8c'; g.lineWidth = 1.5;
     g.beginPath();
-    g.moveTo(bx, by); g.lineTo(G.fx, G.fy);                                  // left floor edge
-    g.moveTo(bx, by); g.lineTo(bx, by - maxH);                               // back-left post
-    g.lineTo(bx + G.fw, by - maxH);                                          // back top
-    g.lineTo(G.fx + G.fw, G.fy - maxH);                                      // right top edge
-    g.lineTo(G.fx + G.fw, G.fy);                                             // front-right post
-    g.moveTo(G.fx, G.fy); g.lineTo(G.fx + G.fw, G.fy);                       // front edge
+    g.moveTo(...bl); g.lineTo(...fl);
+    g.moveTo(...bl); g.lineTo(...blT); g.lineTo(...brT); g.lineTo(...frT); g.lineTo(...fr);
+    g.moveTo(...fl); g.lineTo(...fr);
     g.stroke();
   }
 
   function drawGraph(scale) {
-    if (graphDirty || scale !== graphScale) { renderGraphLayer(scale); graphDirty = false; graphScale = scale; }
+    fitScale();
+    const th = cfg.rockDegrees ? Math.sin(2 * Math.PI * clock / cfg.rockSeconds) * cfg.rockDegrees * Math.PI / 180 : 0;
+    const now = performance.now();
+    const moved = Math.abs(th - graphAngle) > 0.0007 && now - graphDrawnAt > 50;  // rock redraw: small steps, <= 20 fps
+    if (graphDirty || moved || scale !== graphScale) {
+      setAngle(th); graphAngle = th;
+      renderGraphLayer(scale); graphDirty = false; graphScale = scale; graphDrawnAt = now;
+    }
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
     const m = view;
     ctx.drawImage(graphCanvas, m.ox, m.oy + 455 * m.s, graphCanvas.width * (m.s / scale), graphCanvas.height * (m.s / scale));
     ctx.restore();
 
-    // axis labels
-    const bx = G.fx + NT * G.ddx, by = G.fy + NT * G.ddy;
-    text(WU_TIME.toFixed(1), 95, by + 14, 21, WHITE, 'right');
-    text('Time (sec)', 52, 716, 21);
-    text('0', 202, 842, 21, WHITE, 'right');
-    text('0.0', 245, 875, 21);
-    text('Frequency (Hz)', 842, 875, 21, WHITE, 'center');
-    text((BANDWIDTH - 0.005).toFixed(3), 1407, 875, 21, WHITE, 'right');
+    // axis labels ride along with the box corners
+    const fl = corner(0, 0, 0), bl = corner(0, 1, 0), fr = corner(1, 0, 0), fm = corner(0.5, 0, 0), lm = corner(0, 0.5, 0);
+    text(WU_TIME.toFixed(1), bl[0] - 23, bl[1] + 14, 21, WHITE, 'right');
+    text('Time (sec)', lm[0] - 26, lm[1] + 7, 21, WHITE, 'right');
+    text('0', fl[0] - 30, fl[1] - 6, 21, WHITE, 'right');
+    const below = (y) => Math.min(y + 27, 880);                 // keep labels on screen at the rock extremes
+    text('0.0', fl[0] + 13, below(fl[1]), 21);
+    text('Frequency (Hz)', fm[0] + 26, below(fm[1]), 21, WHITE, 'center');
+    text((BANDWIDTH - 0.005).toFixed(3), fr[0] + 7, below(fr[1]), 21, WHITE, 'right');
     text('Power', 1449, 826, 21, WHITE, 'center');
     ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(1449, 800); ctx.lineTo(1449, 728); ctx.moveTo(1440, 740); ctx.lineTo(1449, 728); ctx.lineTo(1458, 740); ctx.stroke();
-    void bx;
   }
 
   // ---------- F1 info box ----------
@@ -512,7 +589,7 @@
       ['The data shown is simulated — nothing is downloaded or analysed.', 19],
       ['Not affiliated with UC Berkeley or the SETI@home project.', 19],
       ['', 10],
-      ['F1  this box      F  fullscreen      N  your name      L  your logo', 19],
+      ['F1 info    F fullscreen    S settings    N name    L logo', 19],
       ['Your display is kept awake while this page is visible.', 19],
       ['', 10],
       ['The real SETI@home ran from May 1999; the classic client', 19],
@@ -620,6 +697,51 @@
   document.getElementById('fsBtn').addEventListener('click', toggleFullscreen);
   document.getElementById('nameBtn').addEventListener('click', askName);
 
+  // ---- Settings window (animation speeds) ----
+  const SETTING_LABELS = {
+    wuMinutes: ['Data unit length', 'min'],
+    stepSeconds: ['Analysis step (per FFT pass)', 's'],
+    growSeconds: ['Graph grow time', 's'],
+    holdSeconds: ['Graph hold time', 's'],
+    signalSeconds: ['Signal display time', 's'],
+    rockSeconds: ['Graph rock period (left-right-left)', 's'],
+    rockDegrees: ['Graph rock angle (0 = off)', '\u00b0'],
+  };
+  const dlg = document.getElementById('settings');
+  const rowsEl = document.getElementById('settingsRows');
+  const inputs = {};
+  for (const [key, [label, unit]] of Object.entries(SETTING_LABELS)) {
+    const [mn, mx, step] = LIMITS[key];
+    const row = document.createElement('div'); row.className = 'row';
+    const id = 'set-' + key;
+    row.innerHTML = `<label for="${id}">${label}</label><input type="range" id="${id}" min="${mn}" max="${mx}" step="${step}"><output for="${id}"></output>`;
+    rowsEl.appendChild(row);
+    const input = row.querySelector('input'), out = row.querySelector('output');
+    inputs[key] = { input, out, unit };
+    input.addEventListener('input', () => {
+      cfg[key] = +input.value;
+      out.textContent = input.value + (unit === '\u00b0' ? '' : ' ') + unit;
+      onSettingsChanged(key);
+    });
+  }
+  function syncSettingsForm() {
+    for (const [key, { input, out, unit }] of Object.entries(inputs)) { input.value = cfg[key]; out.textContent = cfg[key] + (unit === '\u00b0' ? '' : ' ') + unit; }
+  }
+  function onSettingsChanged(key) {
+    const save = {};
+    for (const k of Object.keys(DEFAULTS)) save[k] = cfg[k];
+    store.set('settings', save);
+    if (key === 'wuMinutes' || key === 'stepSeconds') {
+      wu.slots = Math.max(6, Math.round(cfg.wuMinutes * 60 / cfg.stepSeconds));
+    }
+    graphDirty = true;
+  }
+  function openSettings() { syncSettingsForm(); if (!dlg.open) dlg.showModal(); }
+  document.getElementById('settingsBtn').addEventListener('click', openSettings);
+  document.getElementById('settingsReset').addEventListener('click', () => {
+    Object.assign(cfg, DEFAULTS); syncSettingsForm(); onSettingsChanged('wuMinutes');
+  });
+
   // ---- user logo upload (stays in this browser) ----
   const logoFile = document.getElementById('logoFile');
   function pickLogo() { logoFile.value = ''; logoFile.click(); }
@@ -650,12 +772,14 @@
   canvas.addEventListener('click', () => { showInfo = false; });
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (dlg.open) return;                       // typing in the Settings window
     if (e.key === 'F1') { e.preventDefault(); showInfo = !showInfo; return; }
     if (showInfo) { showInfo = false; return; }
     const k = e.key.toLowerCase();
     if (k === 'f') toggleFullscreen();
     else if (k === 'n') askName();
     else if (k === 'l') pickLogo();
+    else if (k === 's') { e.preventDefault(); openSettings(); }
   });
 
   // hide cursor and buttons when idle
@@ -669,5 +793,5 @@
   poke();
 
   // pre-fill the graph so the first frame isn't empty
-  newGraphArray(1024); graph.start = -GROW_TIME;
+  newGraphArray(1024); graph.start = -cfg.growSeconds;
 })();

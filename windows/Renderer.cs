@@ -29,8 +29,7 @@ namespace RetroSeti
         static readonly PointF[] Quad = new PointF[4];
 
         // graph geometry: front edge (232..1400, 848); depth runs up-left to (118..1286, 570)
-        const float Gfx = 232, Gfy = 848, Gfw = 1168, MaxH = 92;
-        const float Ddx = -114f / Sim.NT, Ddy = -278f / Sim.NT;
+        const float MaxH = 92;
 
         static Bitmap graphBmp;
         static int graphVersion = -1;
@@ -136,7 +135,8 @@ namespace RetroSeti
             float ox = (cw - VW * s) / 2, oy = (ch - VH * s) / 2;
 
             // 3D graph from cache (redrawn only when the data or size changes)
-            if (graphVersion != Sim.GraphVersion || Math.Abs(graphScale - s) > 1e-4 || graphBmp == null)
+            bool rocked = UpdateAngle();
+            if (rocked || graphVersion != Sim.GraphVersion || Math.Abs(graphScale - s) > 1e-4 || graphBmp == null)
             {
                 RenderGraph(s);
                 graphVersion = Sim.GraphVersion; graphScale = s;
@@ -385,6 +385,58 @@ namespace RetroSeti
         }
 
         // ---- the 3D power / frequency / time graph, rendered to a cached bitmap ----
+        // At rest it matches the classic view; it rocks like a turntable (rotation in the floor
+        // plane, then the same oblique projection). Mirrors web/seti.js.
+        const float Asp = 1.75f, Ax = 1168f / Asp, Bx = -114, By = -278;
+        static readonly float DepthU = -Bx * Asp / 1168f;
+        static readonly float Pcx = 232 + 1168 / 2f + Bx / 2, Pcy = 848 + By / 2;
+        static float pk = 1, pc = 1, ps = 0;
+        static double fitFor = -1, graphAngle = double.NaN;
+        static readonly System.Diagnostics.Stopwatch graphClock = System.Diagnostics.Stopwatch.StartNew();
+        static long graphDrawnAt = -1000;
+
+        static void FitScale()
+        {
+            if (fitFor == Settings.RockDegrees) return;
+            fitFor = Settings.RockDegrees;
+            float k = 1;
+            for (double a = -1; a <= 1; a += 0.25)
+            {
+                double th = a * Settings.RockDegrees * Math.PI / 180, c = Math.Cos(th), sn = Math.Sin(th);
+                foreach (var x in new[] { 0f, 1f }) foreach (var z in new[] { 0f, 1f }) foreach (var yy in new[] { 0f, MaxH })
+                {
+                    double u = (x - 0.5) * Asp, v = z - 0.5, u2 = u * c + v * sn, v2 = -u * sn + v * c;
+                    double dx = u2 * Ax + Bx * v2, dy = By * v2 - yy;
+                    if (dx < 0) k = (float)Math.Min(k, (Pcx - 112) / -dx); else if (dx > 0) k = (float)Math.Min(k, (1405 - Pcx) / dx);
+                    if (dy < 0) k = (float)Math.Min(k, (Pcy - 452) / -dy); else if (dy > 0) k = (float)Math.Min(k, (878 - Pcy) / dy);
+                }
+            }
+            pk = k;
+        }
+
+        static PointF Corner(float x, float z, float y)
+        {
+            double u = (x - 0.5) * Asp, v = z - 0.5, u2 = u * pc + v * ps, v2 = -u * ps + v * pc;
+            return new PointF((float)(Pcx + pk * (u2 * Ax + Bx * v2)), (float)(Pcy + pk * (By * v2) - y * pk));
+        }
+
+        // returns true when the graph needs redrawing because the rock angle moved
+        static bool UpdateAngle()
+        {
+            FitScale();
+            double th = Settings.RockDegrees > 0
+                ? Math.Sin(2 * Math.PI * Sim.Clock / Settings.RockSeconds) * Settings.RockDegrees * Math.PI / 180 : 0;
+            long now = graphClock.ElapsedMilliseconds;
+            if (!(Math.Abs(th - graphAngle) > 0.0007 && now - graphDrawnAt > 100)) return false;  // slow rock: <= 10 redraws a second
+            graphAngle = th; pc = (float)Math.Cos(th); ps = (float)Math.Sin(th); graphDrawnAt = now;
+            return true;
+        }
+
+        const int NP = (Sim.NF + 1) * (Sim.NT + 1);
+        static readonly float[] gx = new float[NP], gy = new float[NP], gkey = new float[NP];
+        static readonly float[] barKey = new float[Sim.NF * Sim.NT];
+        static readonly int[] order = new int[Sim.NF * Sim.NT];
+
         static void RenderGraph(float scale)
         {
             int w = Math.Max(1, (int)Math.Ceiling(VW * scale)), h = Math.Max(1, (int)Math.Ceiling((VH - GraphTop) * scale));
@@ -393,6 +445,26 @@ namespace RetroSeti
                 graphBmp?.Dispose();
                 graphBmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
             }
+            int NF = Sim.NF, NT = Sim.NT;
+            for (int t = 0; t <= NT; t++)
+            {
+                double v = t / (double)NT - 0.5;
+                for (int i = 0; i <= NF; i++)
+                {
+                    double u = (i / (double)NF - 0.5) * Asp, u2 = u * pc + v * ps, v2 = -u * ps + v * pc;
+                    int n = t * (NF + 1) + i;
+                    gx[n] = (float)(Pcx + pk * (u2 * Ax + Bx * v2)); gy[n] = (float)(Pcy + pk * By * v2); gkey[n] = (float)(DepthU * u2 + v2);
+                }
+            }
+            for (int t = 0; t < NT; t++) for (int i = 0; i < NF; i++)
+            {
+                int n = t * (NF + 1) + i, id = t * NF + i;
+                barKey[id] = -(gkey[n] + gkey[n + NF + 2]) / 2;       // negate: Array.Sort ascending => farthest first
+                order[id] = id;
+            }
+            var keys = (float[])barKey.Clone();
+            Array.Sort(keys, order);
+
             using (var g = Graphics.FromImage(graphBmp))
             {
                 g.Clear(Color.Transparent);
@@ -400,50 +472,50 @@ namespace RetroSeti
                 g.TranslateTransform(0, -GraphTop);
                 g.SmoothingMode = SmoothingMode.None;
                 g.PixelOffsetMode = PixelOffsetMode.Half;
-                float cw = Gfw / Sim.NF;
+                int vis = Sim.GraphVisible < 0 ? NT : Sim.GraphVisible;
+                double span = Sim.GraphMax - Sim.GraphMin; if (span <= 0) span = 1;
                 using (var outline = new Pen(Color.Black, 1f / Math.Max(scale, 0.5f)))
                 {
-                    int vis = Sim.GraphVisible < 0 ? Sim.NT : Sim.GraphVisible;
-                    double span = Sim.GraphMax - Sim.GraphMin; if (span <= 0) span = 1;
-                    for (int t = Sim.NT - 1; t >= Sim.NT - vis; t--)
+                    foreach (int id in order)
                     {
-                        var row = Sim.GraphRows[Sim.NT - 1 - t];
-                        float ox = Gfx + t * Ddx, oy = Gfy + t * Ddy;
-                        for (int i = Sim.NF - 1; i >= 0; i--)
-                        {
-                            float hgt = (float)Math.Min(MaxH * 1.25, 4 + row[i] * 30);
-                            int lv = Math.Max(0, Math.Min(Levels - 1, (int)Math.Round((row[i] - Sim.GraphMin) / span * (Levels - 1))));
-                            float x = ox + i * cw, y = oy;
-                            Quad[0] = new PointF(x, y); Quad[1] = new PointF(x, y - hgt); Quad[2] = new PointF(x + Ddx, y - hgt + Ddy); Quad[3] = new PointF(x + Ddx, y + Ddy);
-                            g.FillPolygon(Side[i, lv], Quad);
-                            Quad[0] = new PointF(x, y - hgt); Quad[1] = new PointF(x + cw, y - hgt); Quad[2] = new PointF(x + cw + Ddx, y - hgt + Ddy); Quad[3] = new PointF(x + Ddx, y - hgt + Ddy);
-                            g.FillPolygon(Top[i, lv], Quad);
-                            g.DrawPolygon(outline, Quad);
-                            g.FillRectangle(Front[i, lv], x, y - hgt, cw, hgt);
-                            g.DrawRectangle(outline, x, y - hgt, cw, hgt);
-                        }
+                        int t = id / NF, i = id - t * NF;
+                        if (t < NT - vis) continue;                   // grows in from the back
+                        double val = Sim.GraphRows[NT - 1 - t][i];
+                        float hgt = (float)Math.Min(MaxH * 1.25, 4 + val * 30) * pk;
+                        int lv = Math.Max(0, Math.Min(Levels - 1, (int)Math.Round((val - Sim.GraphMin) / span * (Levels - 1))));
+                        int a = t * (NF + 1) + i, b = a + 1, d = a + NF + 1, e = d + 1;
+                        if (gx[d] < gx[a]) { Quad[0] = new PointF(gx[a], gy[a]); Quad[1] = new PointF(gx[d], gy[d]); Quad[2] = new PointF(gx[d], gy[d] - hgt); Quad[3] = new PointF(gx[a], gy[a] - hgt); }
+                        else { Quad[0] = new PointF(gx[b], gy[b]); Quad[1] = new PointF(gx[e], gy[e]); Quad[2] = new PointF(gx[e], gy[e] - hgt); Quad[3] = new PointF(gx[b], gy[b] - hgt); }
+                        g.FillPolygon(Side[i, lv], Quad);
+                        Quad[0] = new PointF(gx[a], gy[a] - hgt); Quad[1] = new PointF(gx[b], gy[b] - hgt); Quad[2] = new PointF(gx[e], gy[e] - hgt); Quad[3] = new PointF(gx[d], gy[d] - hgt);
+                        g.FillPolygon(Top[i, lv], Quad);
+                        g.DrawPolygon(outline, Quad);
+                        Quad[0] = new PointF(gx[a], gy[a]); Quad[1] = new PointF(gx[b], gy[b]); Quad[2] = new PointF(gx[b], gy[b] - hgt); Quad[3] = new PointF(gx[a], gy[a] - hgt);
+                        g.FillPolygon(Front[i, lv], Quad);
+                        g.DrawPolygon(outline, Quad);
                     }
                 }
-                float bx = Gfx + Sim.NT * Ddx, by = Gfy + Sim.NT * Ddy;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 using (var p = new Pen(Color.FromArgb(0x8c, 0x8c, 0x8c), 1.5f))
                 {
-                    g.DrawLine(p, bx, by, Gfx, Gfy);
-                    g.DrawLines(p, new[] { new PointF(bx, by), new PointF(bx, by - MaxH), new PointF(bx + Gfw, by - MaxH), new PointF(Gfx + Gfw, Gfy - MaxH), new PointF(Gfx + Gfw, Gfy) });
-                    g.DrawLine(p, Gfx, Gfy, Gfx + Gfw, Gfy);
+                    PointF fl = Corner(0, 0, 0), bl = Corner(0, 1, 0), blT = Corner(0, 1, MaxH), brT = Corner(1, 1, MaxH), frT = Corner(1, 0, MaxH), fr = Corner(1, 0, 0);
+                    g.DrawLine(p, bl, fl);
+                    g.DrawLines(p, new[] { bl, blT, brT, frT, fr });
+                    g.DrawLine(p, fl, fr);
                 }
             }
         }
 
         static void DrawGraphLabels(Graphics g)
         {
-            float by = Gfy + Sim.NT * Ddy;
-            Text(g, Sim.WuTime.ToString("0.0", CI), 95, by + 14, 21, White, Align.Right);
-            Text(g, "Time (sec)", 52, 716, 21, White);
-            Text(g, "0", 202, 842, 21, White, Align.Right);
-            Text(g, "0.0", 245, 875, 21, White);
-            Text(g, "Frequency (Hz)", 842, 875, 21, White, Align.Center);
-            Text(g, (Sim.Bandwidth - 0.005).ToString("0.000", CI), 1407, 875, 21, White, Align.Right);
+            PointF fl = Corner(0, 0, 0), bl = Corner(0, 1, 0), fr = Corner(1, 0, 0), fm = Corner(0.5f, 0, 0), lm = Corner(0, 0.5f, 0);
+            float Below(float y) => Math.Min(y + 27, 880);
+            Text(g, Sim.WuTime.ToString("0.0", CI), bl.X - 23, bl.Y + 14, 21, White, Align.Right);
+            Text(g, "Time (sec)", lm.X - 26, lm.Y + 7, 21, White, Align.Right);
+            Text(g, "0", fl.X - 30, fl.Y - 6, 21, White, Align.Right);
+            Text(g, "0.0", fl.X + 13, Below(fl.Y), 21, White);
+            Text(g, "Frequency (Hz)", fm.X + 26, Below(fm.Y), 21, White, Align.Center);
+            Text(g, (Sim.Bandwidth - 0.005).ToString("0.000", CI), fr.X + 7, Below(fr.Y), 21, White, Align.Right);
             Text(g, "Power", 1449, 826, 21, White, Align.Center);
             using (var p = new Pen(White, 2))
             {

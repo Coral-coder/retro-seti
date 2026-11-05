@@ -21,12 +21,28 @@
     border-radius: 3px; cursor: pointer; text-decoration: none; font: inherit;
   }
   #ui button:hover, #ui a:hover { background: #0a1a50; color: #fff; }
+  #settings {
+    background: #000; color: #fff; border: 5px solid #9a66f6; border-radius: 22px; padding: 22px 26px 18px;
+    font: 15px/1.4 Arial, "Liberation Sans", Helvetica, sans-serif; width: min(460px, calc(100vw - 32px)); box-sizing: border-box;
+  }
+  #settings::backdrop { background: rgba(0, 0, 0, 0.55); }
+  #settings h2 { margin: 0 0 14px; font-size: 20px; font-weight: normal; text-align: center; }
+  #settings .row { display: grid; grid-template-columns: 1fr 64px; gap: 2px 12px; align-items: center; margin: 0 0 12px; }
+  #settings label { grid-column: 1 / 3; color: #c8d6ff; }
+  #settings input[type=range] { width: 100%; accent-color: #9a66f6; }
+  #settings output { text-align: right; font-variant-numeric: tabular-nums; }
+  #settings .hint { color: #8a8a8a; font-size: 13px; margin: 0 0 14px; }
+  #settings .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+  #settings button { background: #000a28; color: #c8d6ff; border: 1px solid #3d5aa0; padding: 7px 12px; border-radius: 3px; cursor: pointer; font: inherit; }
+  #settings button:hover { background: #0a1a50; color: #fff; }
+  #settings button.primary { border-color: #9a66f6; }
 </style>
 </head>
 <body>
 <canvas id="c" aria-label="Simulated radio telescope data analysis"></canvas>
 <div id="ui">
   <button id="wakeBtn" type="button" title="Keep the display from sleeping">Display awake: …</button>
+  <button id="settingsBtn" type="button" title="Animation speeds (S)">Settings</button>
   <button id="nameBtn" type="button" title="Set your user name (N)">Set name</button>
   <button id="logoBtn" type="button" title="Use your own logo in the title (L)">Upload logo</button>
   <button id="logoClear" type="button" title="Go back to the classic title" hidden>Remove logo</button>
@@ -34,6 +50,17 @@
   <a id="dlBtn" href="download/RetroSETI.scr" download title="Windows screensaver">Windows screensaver</a>
   <button id="fsBtn" type="button" title="Fullscreen (F or double-click)">Fullscreen</button>
 </div>
+<dialog id="settings" aria-labelledby="settingsTitle">
+  <form method="dialog">
+    <h2 id="settingsTitle">Settings</h2>
+    <div id="settingsRows"></div>
+    <p class="hint">Changes apply immediately and are saved in this browser.</p>
+    <div class="buttons">
+      <button type="button" id="settingsReset">Reset to defaults</button>
+      <button type="submit" class="primary">Done</button>
+    </div>
+  </form>
+</dialog>
 <script src="seti.js"></script>
 </body>
 </html>
