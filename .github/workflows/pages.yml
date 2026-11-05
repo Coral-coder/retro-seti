@@ -1,0 +1,52 @@
+name: Build & deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master, claude/tender-fermi-1fhhu6]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # .NET Framework 4.8 target (built in to Windows 10/11), compiled via reference assemblies.
+      - name: Build Windows screensaver
+        run: |
+          dotnet build windows/RetroSETI.csproj -c Release -o build
+          mkdir -p web/download
+          cp build/RetroSETI.exe web/download/RetroSETI.scr
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RetroSETI-screensaver
+          path: web/download/RetroSETI.scr
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
