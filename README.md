@@ -14,8 +14,9 @@ Behaviour, formats and colours come from studying Berkeley's original **SETI@hom
 Windows client** (from the Internet Archive's "UC Berkeley SETI@home classic clients"
 collection). It was taken apart and read, never run, and none of its code or artwork is copied:
 
-- **3D graph:** drawn the way 3.08 drew it, at its own resolution (a 750×206 panel) and
-  scaled up without smoothing. Each row is a run of 1-pixel vertical lines coloured with HLS
+- **3D graph:** drawn the way 3.08 drew it, from its 750×206 panel geometry. We render it at
+  2× that resolution, so the sway moves in sub-pixel steps and the outlines are thinner, then
+  scale it smoothly to the screen. Each row is a run of 1-pixel vertical lines coloured with HLS
   (hue = 0.5 + 0.5·(ncols−col)/ncols, lightness = 0.2 + 0.6·height/maxHeight, saturation 1).
   Black fills the steps where the neighbouring column is taller; otherwise one black pixel
   caps each column.

@@ -132,7 +132,7 @@
 
   function gumbelMax(q) { return q <= 1 ? expo() : Math.log(q) - Math.log(-Math.log(1 - Math.random() * 0.999999)); }
 
-  function rockLean() { return Math.round(cg.span * Math.sin(2 * Math.PI * clock / cfg.rockSeconds)); }
+  function rockLean() { return cg.span * Math.sin(2 * Math.PI * clock / cfg.rockSeconds); }   // fractional: smooth sway
 
   function newGraph(fft) {
     let lean, span, dy;
@@ -502,20 +502,22 @@
 
   // ---------- the 3D power / frequency / time graph: pixel renderer ----------
   // Drawn exactly as the 3.08 client did it, at its own resolution (a 750x206 panel at the
-  // bottom of a 753x444 window), then scaled up without smoothing. For every row, each pixel
+  // bottom of a 753x444 window) at RES x that resolution, so the sway moves in sub-pixel steps
+  // and the black outlines are thinner, then scaled to the screen. For every row, each pixel
   // column is a vertical line coloured HLS(hue = 0.5 + 0.5*(ncols-col)/ncols,
   // lightness = 0.2 + 0.6*h/maxH, saturation 1); where the neighbour on the open side is
   // taller a black line fills the step, otherwise one black pixel caps the column.
   const PANEL_Y = 238, SCALE = VW / 753;
-  const pcan = document.createElement('canvas'); pcan.width = PW; pcan.height = PH;
+  const RES = 2, PWR = PW * RES, PHR = PH * RES, BASER = BASE * RES;
+  const pcan = document.createElement('canvas'); pcan.width = PWR; pcan.height = PHR;
   const pctx = pcan.getContext('2d');
-  const pimg = pctx.createImageData(PW, PH);
+  const pimg = pctx.createImageData(PWR, PHR);
   const pbuf = new Uint32Array(pimg.data.buffer);
   const BLACK32 = 0xff000000, GREY32 = 0xff7f7f7f;
   const rgb32 = (r, g, b) => (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
   let drawnGen = -1, drawnRows = 0;
 
-  function put(x, y, c) { if (x >= 0 && x < PW && y >= 0 && y < PH) pbuf[y * PW + x] = c; }
+  function put(x, y, c) { if (x >= 0 && x < PWR && y >= 0 && y < PHR) pbuf[y * PWR + x] = c; }
   function pline(x0, y0, x1, y1, c) {
     const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     let err = dx + dy;
@@ -530,7 +532,7 @@
 
   function graphCorners() {
     const { lean, span, dy, ncols, maxH } = cg;
-    const fx = MARG + Math.trunc((span - lean) / 2), bx = fx + lean;
+    const fx = MARG + (span - lean) / 2, bx = fx + lean;
     return {
       FL: [fx - 2, BASE + 1], FR: [fx + ncols, BASE + 1],
       BL: [bx - 2, BASE - dy], BR: [bx + ncols, BASE - dy], maxH,
@@ -539,7 +541,7 @@
 
   function drawBox() {
     const { FL, FR, BL, BR, maxH } = graphCorners();
-    const L = (a, b) => pline(a[0], a[1], b[0], b[1], GREY32);
+    const L = (a, b) => pline(Math.round(a[0] * RES), Math.round(a[1] * RES), Math.round(b[0] * RES), Math.round(b[1] * RES), GREY32);
     const up = (p) => [p[0], p[1] - maxH];
     L(FL, FR); L(FL, BL); L(BL, BR); L(FR, BR);                 // floor
     L(BL, up(BL)); L(BR, up(BR)); L(up(BL), up(BR));            // back wall
@@ -551,24 +553,38 @@
     const { lean, span, dy, n, ncols, maxH, lut } = cg;
     const flag = lean > 0;
     const h = cg.rows[r];
-    const x0 = MARG + Math.trunc((span - lean) / 2) + Math.trunc(lean * (n - r - 1) / n);
-    const ys = Math.trunc(dy * (n - r - 1) / n);
+    const x0 = Math.round(RES * (MARG + (span - lean) / 2 + lean * (n - r - 1) / n));
+    const ys = Math.round(RES * dy * (n - r - 1) / n);
+    const mh1 = maxH + 1;
     for (let c = 0; c < ncols; c++) {
-      const hc = h[c], x = x0 + c;
-      const col = lut[c * (maxH + 1) + hc];
-      for (let y = ys; y < ys + hc; y++) put(x, BASE - y, col);
+      const hc = h[c], H = hc * RES, xl = x0 + c * RES;
+      if (xl < 0 || xl + RES > PWR) continue;
+      const col = lut[c * mh1 + hc];
+      // column body: rows BASER-ys-H+1 .. BASER-ys (screen y grows downwards)
+      let yTop = BASER - ys - H + 1, yBot = BASER - ys;
+      if (yTop < 0) yTop = 0;
+      for (let y = yTop, i = yTop * PWR + xl; y <= yBot; y++, i += PWR) for (let k = 0; k < RES; k++) pbuf[i + k] = col;
       const nb = flag ? c + 1 : c - 1;
-      if (nb >= 0 && nb < ncols && h[nb] > hc) { for (let y = ys + hc; y < ys + h[nb]; y++) put(x, BASE - y, BLACK32); }
-      else put(x, BASE - (ys + hc), BLACK32);
+      if (nb >= 0 && nb < ncols && h[nb] > hc) {
+        // the step up to a taller neighbour: one (high-res) pixel wide, on the side facing it
+        const edge = flag ? xl + RES - 1 : xl, Hn = h[nb] * RES;
+        for (let y = Math.max(0, BASER - ys - Hn + 1); y <= BASER - ys - H; y++) pbuf[y * PWR + edge] = BLACK32;
+      } else {
+        const yc = BASER - ys - H;                                    // one-pixel cap
+        if (yc >= 0) for (let k = 0, i = yc * PWR + xl; k < RES; k++) pbuf[i + k] = BLACK32;
+      }
     }
   }
 
-  let drawnLean = NaN;
+  let drawnLean = NaN, lastSwayDraw = 0;
   function updatePanel() {
     let changed = false;
     if (cfg.graphAngle === 'rock') cg.lean = rockLean();
-    if (drawnGen !== cg.gen || drawnLean !== cg.lean) {       // new graph, or the sway moved a pixel
-      pbuf.fill(BLACK32); drawBox(); drawnGen = cg.gen; drawnLean = cg.lean; drawnRows = 0; changed = true;
+    const leanKey = Math.round(cg.lean * RES), now = performance.now();
+    const swayed = drawnLean !== leanKey && now - lastSwayDraw > 33;   // at most 30 sway redraws a second
+    if (drawnGen !== cg.gen || swayed) {
+      lastSwayDraw = now;       // new graph, or the sway moved a (high-res) pixel
+      pbuf.fill(BLACK32); drawBox(); drawnGen = cg.gen; drawnLean = leanKey; drawnRows = 0; changed = true;
     }
     while (drawnRows < cg.emitted) { drawRow(drawnRows++); changed = true; }
     if (changed) pctx.putImageData(pimg, 0, 0);
@@ -579,7 +595,8 @@
   function drawGraph() {
     updatePanel();
     ctx.save();
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = true;                        // smooth scaling: no shimmer as it moves
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(pcan, 0, PANEL_Y * SCALE, PW * SCALE, PH * SCALE);
     ctx.restore();
 

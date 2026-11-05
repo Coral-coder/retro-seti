@@ -356,13 +356,17 @@ namespace RetroSeti
         const int PanelY = 238;
         const float Scale = VW / 753f;
         const int Black32 = unchecked((int)0xff000000), Grey32 = unchecked((int)0xff7f7f7f);
-        static readonly int[] pbuf = new int[Sim.PW * Sim.PH];
-        static readonly Bitmap panel = new Bitmap(Sim.PW, Sim.PH, PixelFormat.Format32bppArgb);
+        // drawn at Res x the original resolution: sub-pixel sway steps and thinner outlines
+        const int Res = 2, PWR = Sim.PW * Res, PHR = Sim.PH * Res, BaseR = Sim.Base * Res;
+        static readonly int[] pbuf = new int[PWR * PHR];
+        static readonly Bitmap panel = new Bitmap(PWR, PHR, PixelFormat.Format32bppArgb);
+        static long lastSwayDraw;
         static int drawnGen = -1, drawnRows, drawnLean = int.MinValue;
+        static readonly System.Diagnostics.Stopwatch swayClock = System.Diagnostics.Stopwatch.StartNew();
 
         static int Rgb32(int r, int g, int b) => unchecked((int)0xff000000) | (r << 16) | (g << 8) | b;
         public static int ClassicColour(double h, double l) { var (r, g, b) = HlsToRgb(h, l, 1); return Rgb32(r, g, b); }
-        static void Put(int x, int y, int c) { if (x >= 0 && x < Sim.PW && y >= 0 && y < Sim.PH) pbuf[y * Sim.PW + x] = c; }
+        static void Put(int x, int y, int c) { if (x >= 0 && x < PWR && y >= 0 && y < PHR) pbuf[y * PWR + x] = c; }
 
         static void PLine(int x0, int y0, int x1, int y1, int c)
         {
@@ -377,23 +381,24 @@ namespace RetroSeti
             }
         }
 
-        struct Corners { public Point FL, FR, BL, BR; }
+        struct Corners { public PointF FL, FR, BL, BR; }
         static Corners GraphCorners()
         {
             var G = Sim.G;
-            int fx = Sim.Marg + (G.Span - G.Lean) / 2, bx = fx + G.Lean;
+            float fx = (float)(Sim.Marg + (G.Span - G.Lean) / 2), bx = (float)(fx + G.Lean);
             return new Corners
             {
-                FL = new Point(fx - 2, Sim.Base + 1), FR = new Point(fx + G.NCols, Sim.Base + 1),
-                BL = new Point(bx - 2, Sim.Base - G.Dy), BR = new Point(bx + G.NCols, Sim.Base - G.Dy),
+                FL = new PointF(fx - 2, Sim.Base + 1), FR = new PointF(fx + G.NCols, Sim.Base + 1),
+                BL = new PointF(bx - 2, Sim.Base - G.Dy), BR = new PointF(bx + G.NCols, Sim.Base - G.Dy),
             };
         }
 
         static void DrawBox()
         {
             var k = GraphCorners(); int mh = Sim.G.MaxH;
-            void L(Point a, Point b) => PLine(a.X, a.Y, b.X, b.Y, Grey32);
-            Point Up(Point p) => new Point(p.X, p.Y - mh);
+            int R(float v) => (int)Math.Round(v * Res);
+            void L(PointF a, PointF b) => PLine(R(a.X), R(a.Y), R(b.X), R(b.Y), Grey32);
+            PointF Up(PointF p) => new PointF(p.X, p.Y - mh);
             L(k.FL, k.FR); L(k.FL, k.BL); L(k.BL, k.BR); L(k.FR, k.BR);
             L(k.BL, Up(k.BL)); L(k.BR, Up(k.BR)); L(Up(k.BL), Up(k.BR));
             if (Sim.G.Lean > 0) { L(k.FL, Up(k.FL)); L(Up(k.FL), Up(k.BL)); }
@@ -406,16 +411,28 @@ namespace RetroSeti
             var h = G.Rows[r];
             int n = G.N, ncols = G.NCols, mh1 = G.MaxH + 1;
             bool flag = G.Lean > 0;
-            int x0 = Sim.Marg + (G.Span - G.Lean) / 2 + G.Lean * (n - r - 1) / n;
-            int ys = G.Dy * (n - r - 1) / n;
+            int x0 = (int)Math.Round(Res * (Sim.Marg + (G.Span - G.Lean) / 2 + G.Lean * (n - r - 1) / n));
+            int ys = (int)Math.Round(Res * G.Dy * (n - r - 1) / (double)n);
             for (int c = 0; c < ncols; c++)
             {
-                int hc = h[c], x = x0 + c;
+                int hc = h[c], H = hc * Res, xl = x0 + c * Res;
+                if (xl < 0 || xl + Res > PWR) continue;
                 int col = G.Lut[c * mh1 + hc];
-                for (int y = ys; y < ys + hc; y++) Put(x, Sim.Base - y, col);
+                int yTop = Math.Max(0, BaseR - ys - H + 1), yBot = BaseR - ys;
+                for (int y = yTop, i = yTop * PWR + xl; y <= yBot; y++, i += PWR)
+                    for (int k = 0; k < Res; k++) pbuf[i + k] = col;
                 int nb = flag ? c + 1 : c - 1;
-                if (nb >= 0 && nb < ncols && h[nb] > hc) { for (int y = ys + hc; y < ys + h[nb]; y++) Put(x, Sim.Base - y, Black32); }
-                else Put(x, Sim.Base - (ys + hc), Black32);
+                if (nb >= 0 && nb < ncols && h[nb] > hc)
+                {
+                    // the step up to a taller neighbour: one (high-res) pixel wide, on the side facing it
+                    int edge = flag ? xl + Res - 1 : xl, Hn = h[nb] * Res;
+                    for (int y = Math.Max(0, BaseR - ys - Hn + 1); y <= BaseR - ys - H; y++) pbuf[y * PWR + edge] = Black32;
+                }
+                else
+                {
+                    int yc = BaseR - ys - H;                       // one-pixel cap
+                    if (yc >= 0) for (int k = 0; k < Res; k++) pbuf[yc * PWR + xl + k] = Black32;
+                }
             }
         }
 
@@ -423,14 +440,18 @@ namespace RetroSeti
         {
             bool changed = false;
             if (Settings.GraphAngle == "rock") Sim.G.Lean = Sim.RockLean();
-            if (drawnGen != Sim.G.Gen || drawnLean != Sim.G.Lean)    // new graph, or the sway moved a pixel
+            int leanKey = (int)Math.Round(Sim.G.Lean * Res);
+            long now = swayClock.ElapsedMilliseconds;
+            bool swayed = drawnLean != leanKey && now - lastSwayDraw > 33;   // at most 30 sway redraws a second
+            if (drawnGen != Sim.G.Gen || swayed)
             {
+                lastSwayDraw = now;
                 for (int i = 0; i < pbuf.Length; i++) pbuf[i] = Black32;
-                DrawBox(); drawnGen = Sim.G.Gen; drawnLean = Sim.G.Lean; drawnRows = 0; changed = true;
+                DrawBox(); drawnGen = Sim.G.Gen; drawnLean = leanKey; drawnRows = 0; changed = true;
             }
             while (drawnRows < Sim.G.Emitted) { DrawRow(drawnRows++); changed = true; }
             if (!changed) return;
-            var bd = panel.LockBits(new Rectangle(0, 0, Sim.PW, Sim.PH), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            var bd = panel.LockBits(new Rectangle(0, 0, PWR, PHR), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             System.Runtime.InteropServices.Marshal.Copy(pbuf, 0, bd.Scan0, pbuf.Length);
             panel.UnlockBits(bd);
         }
@@ -441,7 +462,7 @@ namespace RetroSeti
         {
             UpdatePanel();
             var im = g.InterpolationMode; var po = g.PixelOffsetMode;
-            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+            g.InterpolationMode = InterpolationMode.Bilinear;   // smooth scaling: no shimmer as it moves
             g.PixelOffsetMode = PixelOffsetMode.Half;
             g.DrawImage(panel, new RectangleF(0, PanelY * Scale, Sim.PW * Scale, Sim.PH * Scale));
             g.InterpolationMode = im; g.PixelOffsetMode = po;
@@ -453,7 +474,7 @@ namespace RetroSeti
             p = ToV(k.FR.X + 3, below); Text(g, (Sim.Bandwidth - 0.005).ToString("0.000", CI), p.X, p.Y, 21, White, Align.Right);
             bool right = Sim.G.Lean > 0;
             int side = right ? 1 : -1;
-            Point back = right ? k.BR : k.BL, front = right ? k.FR : k.FL;
+            PointF back = right ? k.BR : k.BL, front = right ? k.FR : k.FL;
             var al = right ? Align.Left : Align.Right;
             p = ToV(back.X + side * 12, back.Y + 7); Text(g, Sim.WuTime.ToString("0.0", CI), p.X, p.Y, 21, White, al);
             p = ToV((back.X + front.X) / 2f + side * 13, (back.Y + front.Y) / 2f + 3); Text(g, "Time (sec)", p.X, p.Y, 21, White, al);

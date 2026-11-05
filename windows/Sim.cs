@@ -36,7 +36,8 @@ namespace RetroSeti
     sealed class ClassicGraph
     {
         // Lean = signed sideways depth shift (negative: rows lean up-left); Span = room reserved for it.
-        public int Gen, Lean = -57, Span = 57, Dy = 143, N = 143, NCols = 583, MaxH = 43, Fft = 1024, Emitted, LastSpec = -1;
+        public double Lean = -57;                 // fractional while swaying, so the motion is smooth
+        public int Gen, Span = 57, Dy = 143, N = 143, NCols = 583, MaxH = 43, Fft = 1024, Emitted, LastSpec = -1;
         public int[] Lut;
         public double MaxSoFar, Start = -1e9;
         public readonly List<byte[]> Rows = new List<byte[]>();
@@ -111,8 +112,7 @@ namespace RetroSeti
         static double GumbelMax(double q) =>
             q <= 1 ? Expo() : Math.Log(q) - Math.Log(-Math.Log(1 - Rng.NextDouble() * 0.999999));
 
-        public static int RockLean() =>
-            (int)Math.Round(G.Span * Math.Sin(2 * Math.PI * Clock / Settings.RockSeconds));
+        public static double RockLean() => G.Span * Math.Sin(2 * Math.PI * Clock / Settings.RockSeconds);
 
         public static void NewGraph(int fft)
         {
