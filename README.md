@@ -83,14 +83,6 @@ by hand; `?display=dsn` (or `pulsar`, `hline`, …) pins one):
 
 1. **SETI@home classic**: the original look. Work units are "recorded" in November 2020,
    the last month before Arecibo collapsed.
-3. **Hydrogen Line Survey**: a fast-forwarded drift scan of the Milky Way's 21 cm line
-   (same physical model as the Observatory page): spectrum, waterfall, sky map and the
-   longitude–velocity diagram.
-4. **Pulsar Search**: a dynamic spectrum with dispersed pulses, the dispersion-measure
-   search, folding (profile and phase-vs-time) and a candidate list.
-5. **Black Hole Imaging**: an Earth-sized 230 GHz array at the real EHT sites. Earth's
-   rotation fills the (u,v) plane and the image of M87*, Sgr A*, 3C 279 or Centaurus A is
-   rebuilt from those samples.
 2. **Deep Space Network — LIVE** (real data, not simulated): NASA's live DSN Now feed
    shows which antenna at Goldstone, Madrid or Canberra is talking to which spacecraft right
    now. Each spacecraft appears at its real distance on a light-time scale (Voyager 1 is a
@@ -100,6 +92,14 @@ by hand; `?display=dsn` (or `pulsar`, `hline`, …) pins one):
    SDO's last 48 hours, looping through the AIA channels, with the live GOES X-ray flare class
    and Kp index from NOAA. If a feed is unreachable it falls back to what it has (the DSN links
    to a built-in sample, clearly labelled).
+3. **Hydrogen Line Survey**: a fast-forwarded drift scan of the Milky Way's 21 cm line
+   (same physical model as the Observatory page): spectrum, waterfall, sky map and the
+   longitude–velocity diagram.
+4. **Pulsar Search**: a dynamic spectrum with dispersed pulses, the dispersion-measure
+   search, folding (profile and phase-vs-time) and a candidate list.
+5. **Black Hole Imaging**: an Earth-sized 230 GHz array at the real EHT sites. Earth's
+   rotation fills the (u,v) plane and the image of M87*, Sgr A*, 3C 279 or Centaurus A is
+   rebuilt from those samples.
 6. **Deep Sky Scanner**: an all-sky map in galactic coordinates. The antenna slews to
    famous pulsars, quasars, black holes, masers and an FRB source (real positions, current
    time), locks on, and shows that kind of signal.
