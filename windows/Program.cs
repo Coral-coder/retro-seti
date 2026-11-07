@@ -1,7 +1,8 @@
 // Retro SETI Windows screensaver.
 //   RetroSETI.scr /s          run fullscreen on every monitor (what Windows calls)
 //   RetroSETI.scr /p <hwnd>   draw the little preview in Screen Saver Settings
-//   RetroSETI.scr /c          settings dialog (also: no arguments)
+//   RetroSETI.scr /c          settings: the page in a window with its Settings open (also: no arguments)
+//   RetroSETI.scr /native     the native fallback's settings dialog
 //   RetroSETI.scr /w          run in a normal window (F11 = fullscreen, F1 = info)
 // While running in /s or /w mode it keeps the display on and blocks sleep.
 using System;
@@ -144,18 +145,39 @@ namespace RetroSeti
                 if (arg2 == null && args.Length > 1) arg2 = args[1];
             }
 
+            // The full experience (every display, live NASA data, the SDO video) runs the web app in
+            // WebView2. If that isn't available, fall back to the native SETI@home display.
+            bool web = mode != "/p" && WebBoot.Init() && WebAvailable();
             switch (mode)
             {
-                case "/s": Run(screensaver: true); break;
-                case "/w": Run(screensaver: false); break;
+                case "/s":
+                    if (web) { KeepAwake(true); WebScreensaver(); KeepAwake(false); }
+                    else Run(screensaver: true);
+                    break;
+                case "/w":
+                    if (web) { KeepAwake(true); WebWindow(false); KeepAwake(false); }
+                    else Run(screensaver: false);
+                    break;
                 case "/p":
                     if (arg2 != null && long.TryParse(arg2, out var h)) RunPreview(new IntPtr(h));
                     break;
-                default:
+                case "/native":
                     Application.Run(new SettingsForm());
+                    break;
+                default:
+                    if (web) WebWindow(true);
+                    else Application.Run(new SettingsForm());
                     break;
             }
         }
+
+        // kept in separate, non-inlined methods so WebView2's assemblies load only after WebBoot.Init
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static bool WebAvailable() => WebHost.Available();
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void WebScreensaver() => WebHost.RunScreensaver(() => KeepAwake(true));
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void WebWindow(bool settings) => WebHost.RunWindow(settings, () => KeepAwake(true));
 
         static void KeepAwake(bool on) =>
             Native.SetThreadExecutionState(on

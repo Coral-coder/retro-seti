@@ -907,6 +907,7 @@
   canvas.addEventListener('dblclick', toggleFullscreen);
   canvas.addEventListener('click', () => { showInfo = false; });
   document.addEventListener('keydown', (e) => {
+    if (scrMode) return;                        // the Windows screensaver exits on any key instead
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (dlg.open) return;                       // typing in the Settings window
     if (e.key === 'F1') { e.preventDefault(); showInfo = !showInfo; return; }
@@ -921,9 +922,28 @@
     else if (k === 's') { e.preventDefault(); openSettings(); }
   });
 
+  // ---------- running inside the Windows screensaver (RetroSETI.scr hosts this page in WebView2) ----------
+  // ?scr=1: no buttons or cursor, and any key, click or real mouse movement asks the host to exit.
+  const scrMode = params.get('scr') === '1';
+  if (scrMode) {
+    document.body.classList.add('idle', 'scr');
+    const post = (m) => { try { window.chrome.webview.postMessage(m); } catch (e) { /* not hosted */ } };
+    const t0 = performance.now();
+    let mx = null, my = null;
+    addEventListener('mousemove', (e) => {
+      if (performance.now() - t0 < 1500) return;            // ignore the jitter as the window appears
+      if (mx === null) { mx = e.screenX; my = e.screenY; return; }
+      if (Math.abs(e.screenX - mx) + Math.abs(e.screenY - my) > 12) post('exit');
+    }, true);
+    ['mousedown', 'keydown', 'wheel', 'touchstart'].forEach((ev) => addEventListener(ev, () => post('exit'), true));
+  }
+  // ?settings=1: open the Settings window straight away (used by the screensaver's /c)
+  if (params.get('settings') === '1') setTimeout(openSettings, 400);
+
   // hide cursor and buttons when idle
   let idleTimer = 0;
   function poke() {
+    if (scrMode) return;
     document.body.classList.remove('idle');
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => document.body.classList.add('idle'), 3000);

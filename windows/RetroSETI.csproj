@@ -16,8 +16,27 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <WebView2Version>1.0.4258.31</WebView2Version>
+    <WebView2Pkg>$(NuGetPackageRoot)microsoft.web.webview2/$(WebView2Version)/</WebView2Pkg>
+  </PropertyGroup>
+
+  <!-- Everything the .scr needs is embedded so it stays a single file:
+       the web app (same files as the website) and WebView2's managed DLLs + native loaders. -->
+  <ItemGroup>
+    <EmbeddedResource Include="../web/**/*" Exclude="../web/download/**" LogicalName="web/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES.txt" LogicalName="notices/THIRD-PARTY-NOTICES.txt" />
+    <EmbeddedResource Include="$(WebView2Pkg)lib/net462/Microsoft.Web.WebView2.Core.dll" LogicalName="lib/Microsoft.Web.WebView2.Core.dll" />
+    <EmbeddedResource Include="$(WebView2Pkg)lib/net462/Microsoft.Web.WebView2.WinForms.dll" LogicalName="lib/Microsoft.Web.WebView2.WinForms.dll" />
+    <EmbeddedResource Include="$(WebView2Pkg)runtimes/win-x64/native/WebView2Loader.dll" LogicalName="native/x64/WebView2Loader.dll" />
+    <EmbeddedResource Include="$(WebView2Pkg)runtimes/win-x86/native/WebView2Loader.dll" LogicalName="native/x86/WebView2Loader.dll" />
+    <EmbeddedResource Include="$(WebView2Pkg)runtimes/win-arm64/native/WebView2Loader.dll" LogicalName="native/arm64/WebView2Loader.dll" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <!-- Edge/Chromium engine that hosts the same web displays as the website -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="$(WebView2Version)" />
   </ItemGroup>
 
 </Project>

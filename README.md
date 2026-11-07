@@ -137,27 +137,31 @@ A live USB connection to the RTL-SDR (WebUSB) is not included yet.
 
 ## Windows screensaver
 
-`windows/` is a native C# / GDI+ port of the same visuals that compiles to a single
-`RetroSETI.scr` (.NET Framework 4.8, already part of Windows 10/11 — nothing to install).
+`RetroSETI.scr` runs **the same displays as the website**: all six in rotation, including the
+live NASA Deep Space Network and SDO feeds. It hosts the web app in **WebView2**, the
+Edge/Chromium engine that ships with Windows 10 and 11.
 
-Install: download `RetroSETI.scr` from the Pages site (or the workflow's artifact),
-right-click it → **Install**, or copy it to `C:\Windows\System32`, then pick *Retro SETI* in
-Screen Saver Settings.
+It is still a single file. The web app and the WebView2 SDK's DLLs are embedded and unpacked
+to `%LOCALAPPDATA%\RetroSETI` on first run, so it works offline apart from the live feeds.
+
+Install: download `RetroSETI.scr` from the site, right-click it → **Install**, or copy it to
+`C:\Windows\System32`, then pick *Retro SETI* in Screen Saver Settings.
 
 | Command | What it does |
 | --- | --- |
-| `RetroSETI.scr /s` | Fullscreen on every monitor; mouse/keyboard exits |
-| `RetroSETI.scr /w` | Normal window (F11 / double-click = fullscreen, F1 = info) |
-| `RetroSETI.scr /c` | Settings: name, speeds (same as the web Settings window), title logo, reset stats |
-| `RetroSETI.scr /p <hwnd>` | Little preview in Screen Saver Settings |
+| `RetroSETI.scr /s` | Full screen on every monitor; mouse, key or click exits |
+| `RetroSETI.scr /c` (or **Settings…** in Windows) | Opens the page in a window with its Settings panel (rotation interval, displays in rotation, speeds, name, logo); the screensaver uses the same settings |
+| `RetroSETI.scr /w` | The page in a normal window (F11 or F for full screen) |
+| `RetroSETI.scr /p <hwnd>` | Small preview in Screen Saver Settings (native SETI display) |
+| `RetroSETI.scr /native` | Settings for the native fallback |
 
-While running (`/s` or `/w`) it calls `SetThreadExecutionState(ES_DISPLAY_REQUIRED |
-ES_SYSTEM_REQUIRED)` so the monitor won't power off and the PC won't go to standby. Use `/w`
-when you want the visualizer up as an always-on display. Settings and stats live in
-`HKCU\Software\RetroSETI`.
+While running, it calls `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)`
+so the monitor won't power off and the PC won't sleep. If WebView2 isn't installed (very old
+Windows 10), it falls back to the native C#/GDI+ SETI@home display, which is still included.
 
 Because it's an unsigned download, Windows SmartScreen may warn on first run
-(*More info → Run anyway*).
+(*More info → Run anyway*). Third-party licence: `windows/THIRD-PARTY-NOTICES.txt`
+(Microsoft WebView2 SDK, BSD-style).
 
 Build locally (Windows or Linux, .NET 8 SDK):
 
