@@ -79,23 +79,36 @@ Pages must be set to **Source: GitHub Actions**.
 
 The screensaver page cycles through several observatory displays, all with simulated data
 (Settings → *Switch display every N min* and *Displays in rotation*; ← / → or 1–5 switch
-by hand; `?display=pulsar` pins one):
+by hand; `?display=dsn` (or `pulsar`, `hline`, …) pins one):
 
 1. **SETI@home classic**: the original look. Work units are "recorded" in November 2020,
    the last month before Arecibo collapsed.
-2. **Hydrogen Line Survey**: a fast-forwarded drift scan of the Milky Way's 21 cm line
+3. **Hydrogen Line Survey**: a fast-forwarded drift scan of the Milky Way's 21 cm line
    (same physical model as the Observatory page): spectrum, waterfall, sky map and the
    longitude–velocity diagram.
-3. **Pulsar Search**: a dynamic spectrum with dispersed pulses, the dispersion-measure
+4. **Pulsar Search**: a dynamic spectrum with dispersed pulses, the dispersion-measure
    search, folding (profile and phase-vs-time) and a candidate list.
-4. **Black Hole Imaging**: an Earth-sized 230 GHz array at the real EHT sites. Earth's
+5. **Black Hole Imaging**: an Earth-sized 230 GHz array at the real EHT sites. Earth's
    rotation fills the (u,v) plane and the image of M87*, Sgr A*, 3C 279 or Centaurus A is
    rebuilt from those samples.
-5. **Deep Sky Scanner**: an all-sky map in galactic coordinates. The antenna slews to
+2. **Deep Space Network — LIVE** (real data, not simulated): NASA's live DSN Now feed
+   shows which antenna at Goldstone, Madrid or Canberra is talking to which spacecraft right
+   now. Each spacecraft appears at its real distance on a light-time scale (Voyager 1 is a
+   light-day out), with beams and data packets flowing from today's DSCOVR/EPIC photo of Earth.
+   A spotlight card covers each link in turn: distance, one-way light time, data rate, and
+   received power in dBm and watts (Voyager arrives at about 10⁻¹⁹ W). The Sun on the left is
+   SDO's last 48 hours, looping through the AIA channels, with the live GOES X-ray flare class
+   and Kp index from NOAA. If a feed is unreachable it falls back to what it has (the DSN links
+   to a built-in sample, clearly labelled).
+6. **Deep Sky Scanner**: an all-sky map in galactic coordinates. The antenna slews to
    famous pulsars, quasars, black holes, masers and an FRB source (real positions, current
    time), locks on, and shows that kind of signal.
 
-All displays except SETI use the current date and time.
+All displays except SETI use the current date and time. Rendering is capped at about 1440p
+worth of pixels and scaled by the GPU, so 4K and high-DPI screens stay at 60 fps.
+
+Live data credits: NASA/JPL Deep Space Network (DSN Now), NASA/SDO and the AIA science team,
+NASA DSCOVR/EPIC, NOAA Space Weather Prediction Center (GOES X-ray flux, planetary Kp).
 
 ## Hydrogen Line Observatory (`web/hline.html`)
 

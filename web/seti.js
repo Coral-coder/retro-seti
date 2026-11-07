@@ -598,7 +598,7 @@
     updatePanel();
     ctx.save();
     ctx.imageSmoothingEnabled = true;                        // smooth scaling: no shimmer as it moves
-    ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingQuality = 'medium';
     ctx.drawImage(pcan, 0, PANEL_Y * SCALE, PW * SCALE, PH * SCALE);
     ctx.restore();
 
@@ -647,6 +647,7 @@
   // ---------- displays & rotation ----------
   // Each display: { id, title, tick(dt) (optional, called only while shown), draw() (virtual 1500x885) }
   const view = { s: 1, ox: 0, oy: 0 };
+  const PIXEL_BUDGET = 2560 * 1440;
   const displays = [];
   function drawSeti() {
     drawHeader();
@@ -672,7 +673,10 @@
   }
 
   function render(dt) {
-    const dpr = window.devicePixelRatio || 1;
+    // Render at most ~1440p worth of pixels; the GPU scales the canvas to the screen.
+    // On 4K / high-DPI screens this is the difference between ~25 and 60 frames a second.
+    const css = canvas.clientWidth * canvas.clientHeight || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, Math.sqrt(PIXEL_BUDGET / css));
     const cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
     if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
     ctx.setTransform(1, 0, 0, 1, 0, 0);

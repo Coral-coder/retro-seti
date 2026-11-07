@@ -48,6 +48,7 @@
       lvN[il]++;
     }
     track.push([p.ra, p.dec]);
+    layersDirty = true;
     if (track.length > 4000) track.shift();
   }
 
@@ -58,18 +59,35 @@
     for (let i = 1; i < st.length; i++) if (t <= st[i][0]) { const a = st[i - 1], b = st[i], f = (t - a[0]) / (b[0] - a[0]); return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f]; }
     return [255, 255, 230];
   }
-  const tmp = document.createElement('canvas'), tctx = tmp.getContext('2d');
-  function blit(grid, nx, ny, vmax, x, y, w, h) {
-    tmp.width = nx; tmp.height = ny;
-    const img = tctx.createImageData(nx, ny);
-    for (let i = 0; i < nx * ny; i++) {
-      const [r, g, b] = cmap(Math.sqrt(Math.max(0, grid[i]) / vmax));
-      img.data[4 * i] = r; img.data[4 * i + 1] = g; img.data[4 * i + 2] = b; img.data[4 * i + 3] = 255;
-    }
-    tctx.putImageData(img, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(tmp, x, y, w, h);
+  // colour lookup table (no per-pixel allocations) and cached heatmap layers
+  const LUT = new Uint32Array(1024);
+  for (let i = 0; i < 1024; i++) { const [r, g, b] = cmap(i / 1023); LUT[i] = (255 << 24 | (b & 255) << 16 | (g & 255) << 8 | (r & 255)) >>> 0; }
+  function layer(grid, nx, ny, vmax, cv) {
+    if (cv.width !== nx || cv.height !== ny) { cv.width = nx; cv.height = ny; }
+    const g = cv.getContext('2d'), img = g.createImageData(nx, ny), px = new Uint32Array(img.data.buffer);
+    for (let i = 0; i < nx * ny; i++) px[i] = LUT[Math.min(1023, Math.max(0, Math.sqrt(Math.max(0, grid[i]) / vmax) * 1023) | 0)];
+    g.putImageData(img, 0, 0);
+    return cv;
   }
+  const fallCv = document.createElement('canvas'), lvCv = document.createElement('canvas'), skyCv = document.createElement('canvas');
+  let layersDirty = true;
+  function rebuildLayers() {
+    layersDirty = false;
+    if (fall.length) {
+      const ny = 160, grid = new Float32Array(NV * ny);
+      let vmax = 0.03;
+      for (let r = 0; r < Math.min(ny, fall.length); r++) for (let i = 0; i < NV; i++) { grid[r * NV + i] = fall[r][i]; if (fall[r][i] > vmax) vmax = fall[r][i]; }
+      layer(grid, NV, ny, vmax, fallCv);
+    }
+    const grid = new Float32Array(180 * NV);
+    let vmax = 0.03;
+    for (let il = 0; il < 180; il++) if (lvN[il]) for (let i = 0; i < NV; i++) {
+      const v = lv[il * NV + i] / lvN[il];
+      grid[(NV - 1 - i) * 180 + (179 - il)] = v; if (v > vmax) vmax = v;
+    }
+    layer(grid, 180, NV, vmax, lvCv);
+  }
+  function blitLayer(cv, x, y, w, h) { ctx.imageSmoothingEnabled = true; ctx.drawImage(cv, x, y, w, h); }
 
   // precomputed Milky Way glow for the sky map (integrated hydrogen over a coarse RA/Dec grid)
   const SKY_NX = 120, SKY_NY = 60, sky = new Float32Array(SKY_NX * SKY_NY);
@@ -78,6 +96,8 @@
     const g = H.eqToGal(ra, dec);
     sky[iy * SKY_NX + ix] = Math.exp(-0.5 * (g.b / 7) ** 2) * (0.55 + 0.45 * Math.cos(g.l * Math.PI / 180) ** 2) + 0.04 * Math.exp(-0.5 * (g.b / 30) ** 2);
   }
+
+  layer(sky, SKY_NX, SKY_NY, 1, skyCv);
 
   function axisText(s, x, y, align = 'center') { text(s, x, y, 15, '#bbb', align); }
 
@@ -107,11 +127,9 @@
 
     // --- waterfall ---
     R.panel(20, 504, 720, 366, 'Waterfall');
+    if (layersDirty) rebuildLayers();
     if (fall.length) {
-      const ny = 160, grid = new Float32Array(NV * ny);
-      let vmax = 0.03;
-      for (let r = 0; r < Math.min(ny, fall.length); r++) for (let i = 0; i < NV; i++) { grid[r * NV + i] = fall[r][i]; vmax = Math.max(vmax, fall[r][i]); }
-      blit(grid, NV, ny, vmax, 50, 556, 660, 268);
+      blitLayer(fallCv, 50, 556, 660, 268);
       ctx.strokeStyle = '#7f7f7f'; ctx.strokeRect(50, 556, 660, 268);
       axisText('← approaching        Velocity        receding →', 380, 846);
     }
@@ -120,7 +138,7 @@
     R.panel(760, 104, 720, 384, 'Sky');
     {
       const x0 = 800, y0 = 150, w = 640, h = 300;
-      blit(sky, SKY_NX, SKY_NY, 1, x0, y0, w, h);
+      blitLayer(skyCv, x0, y0, w, h);
       ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x0, y0, w, h);
       const X = (ra) => x0 + (360 - ra) / 360 * w, Y = (dec) => y0 + (90 - dec) / 180 * h;
       ctx.fillStyle = 'rgba(53,222,167,0.55)';
@@ -136,13 +154,7 @@
     // --- longitude-velocity ---
     R.panel(760, 504, 720, 366, 'Galactic longitude – velocity');
     {
-      const grid = new Float32Array(180 * NV).fill(0);
-      let vmax = 0.03;
-      for (let il = 0; il < 180; il++) if (lvN[il]) for (let i = 0; i < NV; i++) {
-        const v = lv[il * NV + i] / lvN[il];
-        grid[(NV - 1 - i) * 180 + (179 - il)] = v; vmax = Math.max(vmax, v);
-      }
-      blit(grid, 180, NV, vmax, 800, 556, 640, 268);
+      blitLayer(lvCv, 800, 556, 640, 268);
       ctx.strokeStyle = '#7f7f7f'; ctx.strokeRect(800, 556, 640, 268);
       for (const l of [360, 270, 180, 90, 0]) axisText(`${l}°`, 800 + (360 - l) / 360 * 640, 846);
     }

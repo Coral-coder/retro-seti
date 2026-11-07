@@ -91,25 +91,31 @@
     dataPB += 0.0004 * uv.length;
   }
 
-  function reconstruct() {
-    // "dirty image": inverse transform of the sampled visibilities
-    const out = new Float32Array(NIMG * NIMG);
-    const step = Math.max(1, Math.floor(uv.length / 500));
-    for (let iy = 0; iy < NIMG; iy++) for (let ix = 0; ix < NIMG; ix++) {
+  // "dirty image": inverse transform of the sampled visibilities, computed a few rows per
+  // frame so the image rebuild never causes a visible hitch
+  let work = null, workRow = 0, workUv = null;
+  function reconstructStep(rowsPerStep) {
+    if (!work) { work = new Float32Array(NIMG * NIMG); workRow = 0; const step = Math.max(1, Math.floor(uv.length / 500)); workUv = uv.filter((_, k) => k % step === 0); }
+    const end = Math.min(NIMG, workRow + rowsPerStep);
+    for (let iy = workRow; iy < end; iy++) for (let ix = 0; ix < NIMG; ix++) {
       const x = ((ix + 0.5) / NIMG - 0.5) * FOV * MUAS, y = (0.5 - (iy + 0.5) / NIMG) * FOV * MUAS;
       let s = 0;
-      for (let k = 0; k < uv.length; k += step) {
-        const p = uv[k], ph = 2 * Math.PI * (p.u * x + p.v * y);
+      for (const p of workUv) {
+        const ph = 2 * Math.PI * (p.u * x + p.v * y);
         const wt = Math.exp(-0.5 * ((p.u * p.u + p.v * p.v) / (5.5e9 * 5.5e9)));   // Gaussian taper: fewer sidelobes
         s += wt * (p.re * Math.cos(ph) - p.im * Math.sin(ph));
       }
-      out[iy * NIMG + ix] = s;
+      work[iy * NIMG + ix] = s;
     }
+    workRow = end;
+    if (workRow < NIMG) return null;
     let mx = 1e-9;
-    for (const v of out) mx = Math.max(mx, v);
-    for (let i = 0; i < out.length; i++) out[i] = Math.max(0, out[i] / mx);
+    for (const v of work) mx = Math.max(mx, v);
+    const out = work.map((v) => Math.max(0, v / mx));
+    work = null;
     return out;
   }
+  function reconstruct() { work = null; let r = null; while (!r) r = reconstructStep(NIMG); return r; }
 
   let acc = 0;
   function tick(dt) {
@@ -117,7 +123,7 @@
       acc += dt;
       while (acc > 0.35 && ha < 6) { acc -= 0.35; ha += 0.15; addSamples(); }
       sinceRecon += dt;
-      if (sinceRecon > 0.8 && uv.length) { sinceRecon = 0; recon = reconstruct(); }
+      if ((sinceRecon > 0.8 || work) && uv.length) { sinceRecon = 0; const r = reconstructStep(4); if (r) recon = r; }
     } else {
       cleanPhase += dt / 8;                 // "imaging": iterate from the dirty image to the final one
       if (cleanPhase > 1.6) nextTarget();
