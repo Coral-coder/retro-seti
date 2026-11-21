@@ -104,6 +104,18 @@ by hand; `?display=dsn` (or `pulsar`, `hline`, …) pins one):
    famous pulsars, quasars, black holes, masers and an FRB source (real positions, current
    time), locks on, and shows that kind of signal.
 
+7. **Launch Control**: a 1960s-style launch control centre data terminal, an original
+   period recreation. A green-phosphor CRT (with glow, scanlines, flicker, vignette and a
+   slow refresh) sits in a console bezel with indicator lamps. It runs a simulated Saturn
+   V-class count and ascent: the GO/NO-GO poll, the terminal countdown with an occasional
+   hold, ignition and liftoff, roll and pitch programs, max Q, S-IC centre/outboard cutoff,
+   staging, S-II, tower jettison, S-IVB and orbit insertion, then it recycles. Pages of
+   telemetry (S-IC, S-II, S-IVB/IU, guidance) cycle with measurement IDs, values, units and
+   limit flags, alongside propellant bars, a trajectory plot, flight numbers and an event log.
+   Event times follow the documented Saturn V sequence; the measurement IDs and wording are
+   invented. It also has its own page, `apollo.html` (F full screen, A amber/green,
+   1/2/4 time speed).
+
 All displays except SETI use the current date and time. Rendering is capped at about 1440p
 worth of pixels and scaled by the GPU, so 4K and high-DPI screens stay at 60 fps.
 

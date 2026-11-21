@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+<title>Launch Control Terminal</title>
+<meta name="description" content="A 1960s-style launch control center data terminal running a simulated Saturn V count and ascent.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111'/%3E%3Ctext x='4' y='21' font-family='monospace' font-size='13' fill='%237dff9a'%3ET-0%3C/text%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; }
+  body.idle { cursor: none; }
+  #help { position: fixed; left: 12px; bottom: 10px; font: 12px/1.4 "Courier New", monospace; color: #7dff9a; background: rgba(0,0,0,0.6);
+          padding: 6px 10px; border: 1px solid #2a5a35; border-radius: 4px; transition: opacity .6s; }
+  #help a { color: #b8ffc8; }
+  body.idle #help { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Simulated launch control data terminal"></canvas>
+<div id="help">F fullscreen &middot; A amber/green &middot; 1 2 4 time speed &middot; <a href="./">&larr; Retro SETI</a> &middot; all data simulated</div>
+<script src="displays/lcc.js"></script>
+<script>
+(() => {
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const params = new URLSearchParams(location.search);
+  const term = window.LCC.create({ amber: params.get('amber') === '1', speed: +params.get('speed') || 1 });
+  const VW = 1500, VH = 885;
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.25, (now - last) / 1000); last = now;
+    term.tick(dt);
+    const css = canvas.clientWidth * canvas.clientHeight || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, Math.sqrt(2560 * 1440 / css));
+    const cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
+    if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
+    const s = Math.min(cw / VW, ch / VH);
+    ctx.setTransform(s, 0, 0, s, (cw - VW * s) / 2, (ch - VH * s) / 2);
+    term.draw(ctx, 0, 0, VW, VH, Date.now());
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  let amber = params.get('amber') === '1';
+  addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); }
+    else if (k === 'a') { amber = !amber; term.setAmber(amber); }
+    else if (k === '1' || k === '2' || k === '4') term.setSpeed(+k);
+  });
+  canvas.addEventListener('dblclick', () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.()));
+
+  // keep the display awake while the page is visible
+  let lock = null;
+  async function wake() { try { if (!lock && 'wakeLock' in navigator && document.visibilityState === 'visible') { lock = await navigator.wakeLock.request('screen'); lock.addEventListener('release', () => { lock = null; }); } } catch (e) { /* not allowed */ } }
+  document.addEventListener('visibilitychange', wake); addEventListener('pointerdown', wake); setInterval(wake, 15000); wake();
+
+  let idle = 0;
+  const poke = () => { document.body.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), 3000); };
+  ['mousemove', 'keydown', 'pointerdown'].forEach((ev) => addEventListener(ev, poke)); poke();
+})();
+</script>
+</body>
+</html>
