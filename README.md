@@ -105,8 +105,8 @@ by hand; `?display=dsn` (or `pulsar`, `hline`, …) pins one):
    time), locks on, and shows that kind of signal.
 
 7. **Launch Control**: a 1960s-style launch control centre data terminal, an original
-   period recreation. A green-phosphor CRT (with glow, scanlines, flicker, vignette and a
-   slow refresh) sits in a console bezel with indicator lamps. It runs a simulated Saturn
+   period recreation. The green-phosphor CRT screen (with glow, scanlines, flicker, vignette
+   and a slow refresh) fills the frame, with a raw telemetry downlink scrolling down the right. It runs a simulated Saturn
    V-class count and ascent: the GO/NO-GO poll, the terminal countdown with an occasional
    hold, ignition and liftoff, roll and pitch programs, max Q, S-IC centre/outboard cutoff,
    staging, S-II, tower jettison, S-IVB and orbit insertion, then it recycles. Pages of

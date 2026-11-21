@@ -2,7 +2,7 @@
  * Retro SETI display: LAUNCH CONTROL — a 1960s-style launch control center data terminal.
  *
  * An original, period-styled recreation (not a copy of any real screen): a green-phosphor CRT
- * in a console bezel, showing a simulated Saturn V-class count and ascent. The event times and
+ * filling the frame, showing a simulated Saturn V-class count and ascent. The event times and
  * flight values follow the publicly documented Saturn V launch sequence; measurement IDs,
  * layout and wording are invented. Everything is simulated ("TRAINING MODE").
  *
@@ -50,7 +50,7 @@
     [549, 'S-II/S-IVB SEPARATION'], [552, 'S-IVB IGNITION'], [699, 'S-IVB CUTOFF'], [709, 'ORBIT INSERTION'],
     [740, 'PARKING ORBIT 103.0 X 98.9 NM — GO'],
   ];
-  const T_START = -330, T_END = 790;
+  const T_START = -100, T_END = 790;
 
   function fmtT(t) {
     const s = Math.abs(Math.round(t)), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, ss = s % 60;
@@ -64,8 +64,8 @@
 
   // ------------------------------------------------------------------ the terminal
   function create(opts = {}) {
-    const W = 1024, H = 768;                         // CRT raster
-    const COLS = 80, ROWS = 38, CW = W / COLS, LH = 19.4, TOP = 18;
+    const W = 1302, H = 768;                         // CRT raster, same shape as the frame
+    const CW = 12.8, COLS = Math.floor(W / CW), ROWS = 38, LH = 19.4, TOP = 18;
     const term = document.createElement('canvas'); term.width = W; term.height = H;
     const tg = term.getContext('2d');
     const glow = document.createElement('canvas'); glow.width = W / 2; glow.height = H / 2;
@@ -74,11 +74,11 @@
 
     const st = {
       t: T_START, speed: opts.speed || 1, vehicle: 0, hold: 0, holdAt: null, logIdx: 0, log: [],
-      page: 0, pageT: 0, lastRaster: -1, amber: !!opts.amber, values: null, valT: 0, trail: [],
+      page: 0, pageT: 0, stream: [], streamT: 0, frame: 0, lastRaster: -1, amber: !!opts.amber, values: null, valT: 0, trail: [],
     };
     function newMission() {
       st.t = T_START; st.vehicle = 500 + Math.floor(Math.random() * 99); st.log = []; st.logIdx = 0; st.trail = [];
-      st.holdAt = Math.random() < 0.5 ? -120 - Math.floor(Math.random() * 60) : null; st.hold = 0;
+      st.holdAt = Math.random() < 0.4 ? -60 - Math.floor(Math.random() * 30) : null; st.hold = 0;
       addLog('COUNT PICKED UP — VEHICLE SA-' + st.vehicle);
     }
     function addLog(msg, t = st.t) { st.log.push([t, msg]); if (st.log.length > 40) st.log.shift(); }
@@ -125,7 +125,7 @@
       const before = st.t;
       // planned hold during the terminal count
       if (st.holdAt !== null && st.t >= st.holdAt && st.hold === 0 && st.t < st.holdAt + 1) {
-        st.hold = rnd(15, 35); addLog('HOLD — CALLED BY TEST SUPERVISOR');
+        st.hold = rnd(8, 16); addLog('HOLD — CALLED BY TEST SUPERVISOR');
         addLog('S-II LH2 VENT VALVE INDICATION'); st.holdAt = null;
       }
       if (st.hold > 0) { st.hold -= dt; if (st.hold <= 0) { st.hold = 0; addLog('INDICATION CLEARED — COUNT RESUMING'); } }
@@ -135,6 +135,14 @@
       if (st.t > T_END) newMission();
       st.pageT += dt;
       if (st.pageT > 14) { st.pageT = 0; st.page = (st.page + 1) % PAGES.length; }
+      // raw PCM downlink scrolling past on the right
+      st.streamT += dt;
+      while (st.streamT > 0.07) {
+        st.streamT -= 0.07; st.frame++;
+        const hx = () => Math.floor(Math.random() * 65536).toString(16).toUpperCase().padStart(4, '0');
+        st.stream.push(st.frame % 12 === 0 ? [`FRM ${String(st.frame / 12 % 100000).padStart(5, '0')} SYNC`, 1] : [`${hx()} ${hx()} ${hx()} ${hx()}`, 0]);
+        if (st.stream.length > 40) st.stream.shift();
+      }
       st.valT -= dt;
       if (st.valT <= 0 || !st.values) { st.valT = 0.45; st.values = computeValues(); }
     }
@@ -201,16 +209,23 @@
 
     function raster(nowMs) {
       setPalette();
-      tg.fillStyle = '#000'; tg.fillRect(0, 0, W, H);
+      tg.setTransform(1, 0, 0, 1, 0, 0); tg.fillStyle = '#000'; tg.fillRect(0, 0, W, H);
+      tg.setTransform(1, 0, 0, 1, 14, 2);              // a little margin inside the glass
       tg.textBaseline = 'top';
       const v = st.values, t = st.t, P = v.P;
       const phase = st.hold > 0 ? 'HOLD' : t < -187 ? 'COUNTDOWN' : t < 0 ? 'TERMINAL COUNT' : t < 709 ? 'POWERED FLIGHT' : 'ORBIT';
       // header
       put(0, 0, 'LAUNCH CONTROL CENTER   FIRING ROOM 1   DATA DISPLAY 07', ink);
       put(62, 0, `GMT ${fmtGmt(nowMs)}`, ink);
+      put(83, 0, 'TLM LINK 1  ' + (Math.floor(nowMs / 250) % 2 ? '<<<<' : ' <<<'), ink);
+      put(83, 1, 'PCM 72 KBPS  LOCK', dim);
+      // downlink column
+      for (let r = 3; r < 38; r++) put(81, r, '|', dim);
+      const rows = st.stream.slice(-34);
+      rows.forEach(([txt, sync], i) => put(83, 3 + i, txt, sync ? hot : i === rows.length - 1 ? hot : dim));
       put(0, 1, `VEHICLE SA-${st.vehicle}   PAD 39A   SEQ: ${phase.padEnd(15)}`, dim);
       put(62, 1, 'TRAINING MODE', st.hold > 0 ? hot : dim);
-      put(0, 2, '='.repeat(80), dim);
+      put(0, 2, '='.repeat(COLS), dim);
       // big count clock
       tg.fillStyle = st.hold > 0 && Math.floor(nowMs / 500) % 2 ? dim : hot;
       tg.font = 'bold 46px "Courier New", Courier, monospace';
@@ -283,7 +298,7 @@
       put(0, 37, `> DISPLAY PAGE ${String(((st.page + 1) % PAGES.length) + 1).padStart(2, '0')} IN ${String(Math.ceil(14 - st.pageT)).padStart(2, '0')} SEC ${cursor}`, dim);
     }
 
-    // ---------------------------------------------------------------- console + CRT effects
+    // ---------------------------------------------------------------- CRT effects
     let scan = null, vign = null;
     function effects(w, h) {
       scan = document.createElement('canvas'); scan.width = 4; scan.height = 4;
@@ -295,32 +310,13 @@
       g.fillStyle = grd; g.fillRect(0, 0, w, h);
     }
 
-    function lamp(ctx, x, y, label, on, col) {
-      ctx.fillStyle = on ? col : '#2a2a26';
-      ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.fill();
-      if (on) { ctx.fillStyle = col.replace('rgb', 'rgba').replace(')', ',0.25)'); ctx.beginPath(); ctx.arc(x, y, 18, 0, 2 * Math.PI); ctx.fill(); }
-      ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.stroke();
-      ctx.fillStyle = '#1b1b18'; ctx.font = 'bold 11px Arial, Helvetica, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillText(label, x + 16, y + 1);
-    }
-
     function draw(ctx, X0, Y0, Wd, Hd, nowMs) {
-      // console: painted steel bezel with the CRT and two lamp columns
-      const t = st.t;
-      ctx.fillStyle = '#9a978c'; ctx.fillRect(X0, Y0, Wd, Hd);
-      const grd = ctx.createLinearGradient(X0, Y0, X0, Y0 + Hd);
-      grd.addColorStop(0, 'rgba(255,255,255,0.12)'); grd.addColorStop(1, 'rgba(0,0,0,0.25)');
-      ctx.fillStyle = grd; ctx.fillRect(X0, Y0, Wd, Hd);
-      // CRT opening (4:3)
-      const ch = Hd - 92, cw = ch * 4 / 3, cx = X0 + (Wd - cw) / 2, cy = Y0 + 28;
-      ctx.fillStyle = '#141412'; roundRect(ctx, cx - 18, cy - 18, cw + 36, ch + 36, 26); ctx.fill();
-      ctx.fillStyle = '#050605'; roundRect(ctx, cx, cy, cw, ch, 18); ctx.fill();
-
-      // raster -> glow -> screen
+      // just the CRT, filling the frame
+      const cx = X0, cy = Y0, cw = Wd, ch = Hd;
+      ctx.fillStyle = '#000'; ctx.fillRect(cx, cy, cw, ch);
       const nowRaster = Math.floor(nowMs / 66);               // ~15 Hz raster refresh
       if (nowRaster !== st.lastRaster) { st.lastRaster = nowRaster; raster(nowMs); if (filterOK) { gg.clearRect(0, 0, glow.width, glow.height); gg.filter = 'blur(5px)'; gg.drawImage(term, 0, 0, glow.width, glow.height); gg.filter = 'none'; } }
       ctx.save();
-      roundRect(ctx, cx, cy, cw, ch, 18); ctx.clip();
       const flick = 0.96 + 0.04 * Math.random();
       ctx.globalAlpha = flick;
       ctx.imageSmoothingEnabled = true;
@@ -336,29 +332,7 @@
       bg.addColorStop(0, 'rgba(255,255,255,0)'); bg.addColorStop(0.5, 'rgba(180,255,200,0.035)'); bg.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = bg; ctx.fillRect(cx, by - 60, cw, 120);
       ctx.restore();
-      // glass reflection
-      const rg = ctx.createLinearGradient(cx, cy, cx + cw * 0.6, cy + ch * 0.6);
-      rg.addColorStop(0, 'rgba(255,255,255,0.06)'); rg.addColorStop(0.4, 'rgba(255,255,255,0)');
-      ctx.fillStyle = rg; roundRect(ctx, cx, cy, cw, ch, 18); ctx.fill();
-
-      // lamp columns
-      const L = cx - 150, Rr = cx + cw + 36;
-      const lampsL = [['TERMINAL CT', t >= -187 && t < 0], ['INT POWER', t >= -50], ['IGNITION', t >= -9 && t < 161], ['LIFTOFF', t >= 0],
-        ['MAX Q', t >= 70 && t < 100], ['HOLD', st.hold > 0]];
-      const lampsR = [['S-IC', t >= -6 && t < 161], ['S-II', t >= 164 && t < 548], ['S-IVB', t >= 552 && t < 699], ['LET JETT', t >= 197],
-        ['ORBIT', t >= 709], ['TRAINING', true]];
-      const col = (name) => (name === 'HOLD' ? 'rgb(255,70,50)' : name === 'TRAINING' ? 'rgb(255,190,60)' : 'rgb(110,255,140)');
-      lampsL.forEach(([n, on], i) => lamp(ctx, L + 20, cy + 40 + i * 62, n, on && (n !== 'HOLD' || Math.floor(nowMs / 400) % 2), col(n)));
-      lampsR.forEach(([n, on], i) => lamp(ctx, Rr + 20, cy + 40 + i * 62, n, on, col(n)));
-      // nameplate
-      ctx.fillStyle = '#1b1b18'; ctx.font = 'bold 13px Arial, Helvetica, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-      ctx.fillText('DATA DISPLAY  07  ·  LAUNCH VEHICLE SYSTEMS  \u00b7  SIMULATED', X0 + Wd / 2, Y0 + Hd - 10);
     }
-    function roundRect(ctx, x, y, w, h, r) {
-      ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
-    }
-
     return {
       tick, draw, state: st,
       setAmber(a) { st.amber = a; st.lastRaster = -2; },
